@@ -1,0 +1,91 @@
+# Integration configuration; supply these environment variables from your runner.
+# Production should use its own host.id, token and receiver paths.
+receivers:
+  hostmetrics:
+    root_path: /host
+    collection_interval: 2s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.time:
+            attributes: [cpu, state]
+          system.cpu.logical.count:
+            enabled: false
+      memory:
+        metrics:
+          system.memory.limit:
+            enabled: true
+          system.linux.memory.available:
+            enabled: true
+      filesystem: {}
+      disk: {}
+      network: {}
+      paging: {}
+      load: {}
+      system: {}
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 2s
+    # Only observe this test image, not other services on the Docker daemon.
+    excluded_images: ['!${env:COLLECTOR_IMAGE}']
+  otlp:
+    protocols:
+      http:
+        endpoint: ${env:AGENT_OTLP_LISTEN}
+
+processors:
+  resource/stock:
+    attributes:
+      - key: host.id
+        value: stock
+        action: upsert
+  filter/supported:
+    error_mode: propagate
+    metrics:
+      metric:
+        - >-
+          name != "system.cpu.time" and name != "system.cpu.load_average.1m" and
+          name != "system.memory.limit" and name != "system.linux.memory.available" and
+          name != "system.paging.usage" and name != "system.uptime" and
+          name != "system.filesystem.usage" and name != "system.disk.io" and
+          name != "system.network.io" and name != "container.cpu.utilization" and
+          name != "container.memory.usage.total" and name != "container.memory.usage.limit"
+      datapoint:
+        - 'metric.name == "system.paging.usage" and attributes["state"] == "cached"'
+
+exporters:
+  otlp_http/stock:
+    endpoint: ${env:OTLP_HUB_URL}
+    compression: gzip
+    headers:
+      Authorization: Bearer ${env:STOCK_TOKEN}
+      X-Host-ID: stock
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: false
+  otlp_http/agent:
+    endpoint: ${env:OTLP_HUB_URL}
+    compression: gzip
+    headers:
+      Authorization: Bearer ${env:AGENT_TOKEN}
+      X-Host-ID: agent
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: false
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: error
+  pipelines:
+    metrics/stock:
+      receivers: [hostmetrics, docker_stats]
+      processors: [resource/stock, filter/supported]
+      exporters: [otlp_http/stock]
+    metrics/agent:
+      receivers: [otlp]
+      exporters: [otlp_http/agent, debug]

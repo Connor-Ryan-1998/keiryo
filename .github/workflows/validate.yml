@@ -1,0 +1,38 @@
+name: Validate keiryō
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v5
+      - uses: go-task/setup-task@v1
+      - name: Install pinned Rust toolchain
+        working-directory: agent-rust
+        run: rustup show active-toolchain
+      - run: uv sync --locked
+      - run: uv run --locked task lint
+      - run: uv run --locked task test
+      - run: uv run --locked task test SUITE=ui
+      - run: uv run --locked task test SUITE=recovery
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container without publishing
+        run: docker build --tag keiryo:ci .

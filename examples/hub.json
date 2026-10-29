@@ -1,0 +1,14 @@
+{
+  "ui_listen": "127.0.0.1:9080",
+  "agent_listen": "127.0.0.1:9081",
+  "database": "../data/monitoring.db",
+  "auth_mode": "local",
+  "public_url": "http://127.0.0.1:9080",
+  "agents": {"node-1": "node-1.token"},
+  "raw_hours": 24,
+  "bucket_seconds": 300,
+  "summary_days": 30,
+  "storage_bytes": 1073741824,
+  "stale_seconds": 180,
+  "offline_seconds": 300
+}

@@ -1,0 +1,53 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {"attributes": [{"key": "host.id", "value": {"stringValue": "node"}}]},
+      "scopeMetrics": [{
+        "scope": {"name": "otelcol/hostmetricsreceiver"},
+        "metrics": [
+          {"name": "system.cpu.time", "unit": "s", "sum": {"aggregationTemporality": 2, "isMonotonic": true, "dataPoints": [
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "user"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 100},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "idle"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 100},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "user"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 102.5},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "idle"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 107.5},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "system"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "wait"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "nice"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "interrupt"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "softirq"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "steal"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "system"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "wait"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "nice"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "interrupt"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "softirq"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 0},
+            {"attributes": [{"key": "cpu", "value": {"stringValue": "cpu0"}}, {"key": "state", "value": {"stringValue": "steal"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asDouble": 0}
+          ]}},
+          {"name": "system.memory.limit", "unit": "By", "sum": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": "1024"}]}},
+          {"name": "system.linux.memory.available", "unit": "By", "sum": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": "256"}]}},
+          {"name": "system.filesystem.usage", "unit": "By", "sum": {"aggregationTemporality": 2, "dataPoints": [
+            {"attributes": [{"key": "device", "value": {"stringValue": "/dev/vda1"}}, {"key": "mode", "value": {"stringValue": "rw"}}, {"key": "mountpoint", "value": {"stringValue": "/"}}, {"key": "type", "value": {"stringValue": "ext4"}}, {"key": "state", "value": {"stringValue": "free"}}], "timeUnixNano": "1700000010000000000", "asInt": "200"},
+            {"attributes": [{"key": "device", "value": {"stringValue": "/dev/vda1"}}, {"key": "mode", "value": {"stringValue": "rw"}}, {"key": "mountpoint", "value": {"stringValue": "/"}}, {"key": "type", "value": {"stringValue": "ext4"}}, {"key": "state", "value": {"stringValue": "used"}}], "timeUnixNano": "1700000010000000000", "asInt": "700"},
+            {"attributes": [{"key": "device", "value": {"stringValue": "/dev/vda1"}}, {"key": "mode", "value": {"stringValue": "rw"}}, {"key": "mountpoint", "value": {"stringValue": "/"}}, {"key": "type", "value": {"stringValue": "ext4"}}, {"key": "state", "value": {"stringValue": "reserved"}}], "timeUnixNano": "1700000010000000000", "asInt": "100"}
+          ]}},
+          {"name": "system.disk.io", "unit": "By", "sum": {"aggregationTemporality": 2, "isMonotonic": true, "dataPoints": [
+            {"attributes": [{"key": "device", "value": {"stringValue": "vda"}}, {"key": "direction", "value": {"stringValue": "read"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asInt": "100"},
+            {"attributes": [{"key": "device", "value": {"stringValue": "vda"}}, {"key": "direction", "value": {"stringValue": "read"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asInt": "300"}
+          ]}},
+          {"name": "system.network.io", "unit": "By", "sum": {"aggregationTemporality": 2, "isMonotonic": true, "dataPoints": [
+            {"attributes": [{"key": "device", "value": {"stringValue": "eth0"}}, {"key": "direction", "value": {"stringValue": "receive"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000000000000000", "asInt": "200"},
+            {"attributes": [{"key": "device", "value": {"stringValue": "eth0"}}, {"key": "direction", "value": {"stringValue": "receive"}}], "startTimeUnixNano": "1699999900000000000", "timeUnixNano": "1700000010000000000", "asInt": "400"}
+          ]}}
+        ]
+      }]
+    },
+    {
+      "resource": {"attributes": [{"key": "host.id", "value": {"stringValue": "node"}}, {"key": "container.id", "value": {"stringValue": "abc"}}, {"key": "container.name", "value": {"stringValue": "fixture"}}]},
+      "scopeMetrics": [{"scope": {"name": "otelcol/dockerstatsreceiver"}, "metrics": [
+        {"name": "container.cpu.utilization", "unit": "1", "gauge": {"dataPoints": [{"timeUnixNano": "1700000010000000000", "asDouble": 150}]}},
+        {"name": "container.memory.usage.total", "unit": "By", "sum": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": "300"}]}},
+        {"name": "container.memory.usage.limit", "unit": "By", "sum": {"aggregationTemporality": 2, "dataPoints": [{"timeUnixNano": "1700000010000000000", "asInt": "1000"}]}}
+      ]}]
+    }
+  ]
+}

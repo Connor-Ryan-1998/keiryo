@@ -1,0 +1,16 @@
+/bin/
+/data/
+*.token
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+/agent-rust/target/
+*.redb
+.venv/
+__pycache__/
+*.py[cod]
+.env
+*.log
+.DS_Store

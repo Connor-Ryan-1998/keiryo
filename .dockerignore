@@ -1,0 +1,10 @@
+bin
+data
+*.token
+**/*.token
+**/*.db
+**/*.redb
+agent-rust/target
+.git
+.venv
+**/__pycache__

@@ -1,0 +1,118 @@
+{{define "head"}}
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+<title>keiryō · lightweight monitoring</title><link rel="icon" type="image/svg+xml" href="/static/keiryo.svg"><link rel="icon" type="image/png" sizes="32x32" href="/static/keiryo-32.png"><link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/echarts.min.js" defer></script>
+<script src="/static/dashboard.js" defer></script>
+</head><body><header><a href="/"><img src="/static/keiryo.svg" width="32" height="32" alt="">keiryō</a></header><main>
+{{end}}
+{{define "foot"}}</main></body></html>{{end}}
+
+{{define "login"}}{{template "head"}}
+<h1>Sign in</h1><form method="post" action="/login">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>Username <input name="username" autocomplete="username" required></label>
+<label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="72"></label>
+<button>Sign in</button></form>
+<p>First login: admin / admin. Change the password before accessing data.</p>
+{{template "foot"}}{{end}}
+
+{{define "password"}}{{template "head"}}
+<h1>Set a new password</h1><form method="post" action="/password">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label>New password (6–72 bytes, including at least one punctuation or symbol character) <input name="password" type="password" minlength="6" maxlength="72" autocomplete="new-password" required></label>
+<button>Save and sign in again</button></form>
+{{template "foot"}}{{end}}
+
+{{define "logout"}}{{if .Local}}
+<form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>Sign out</button></form>
+{{end}}{{end}}
+
+{{define "fleet"}}{{template "head"}}
+<div class="page-heading"><div><p class="eyebrow">Infrastructure monitoring</p><h1>{{.Title}}</h1></div>{{template "logout" .}}</div>
+<nav class="section-nav" aria-label="Dashboard sections">{{range .Views}}<a href="?view={{.ID}}&amp;offset={{$.Offset}}&amp;range={{$.Range}}&amp;q={{$.Query}}"{{if eq .ID $.View}} aria-current="page"{{end}}>{{.Title}}</a>{{end}}</nav>
+<form class="toolbar" method="get">
+<input type="hidden" name="view" value="{{.View}}">
+<input type="hidden" name="offset" value="{{.Offset}}">
+<label>Time range <select name="range"><option value="1h" {{if eq .Range "1h"}}selected{{end}}>1 hour</option><option value="24h" {{if eq .Range "24h"}}selected{{end}}>24 hours</option><option value="7d" {{if eq .Range "7d"}}selected{{end}}>7 days</option><option value="30d" {{if eq .Range "30d"}}selected{{end}}>30 days</option></select></label>
+<label>Filter this page <input name="q" value="{{.Query}}" placeholder="Host name or ID" maxlength="256"></label><button>Apply</button>
+<label>Updates <select id="refresh-select"><option value="live">On new samples</option><option value="0">Paused</option></select></label><button type="button" id="refresh-now">Refresh now</button>
+</form>
+<p id="refresh-status" class="muted" role="status" aria-live="polite">Connecting to sample updates. Collection runs every 60 seconds.</p>
+<p class="muted">Contact freshness is not a health guarantee. Missing measurements are unavailable, not zero. Totals, charts, rankings and filters cover this page (up to 100 hosts).</p>
+<div id="dashboard-data" data-start="{{.Start}}" data-end="{{.End}}" data-gap="{{.Gap}}" data-step="{{.Step}}" data-thresholds="{{resourcePolicy}}">
+{{if .Degraded}}<p role="alert">{{.Degraded}}</p>{{end}}
+{{if eq .View "overview"}}
+<section id="overview" aria-label="Fleet Overview">
+<div class="stats fleet-stats"><div class="stat"><span>Monitored hosts</span><strong>{{len .Hosts}}</strong></div><div class="stat healthy"><span>Within thresholds</span><strong>{{index .Counts "healthy"}}</strong></div><div class="stat warning"><span>Warning</span><strong>{{index .Counts "warning"}}</strong></div><div class="stat critical"><span>Critical</span><strong>{{index .Counts "critical"}}</strong></div><div class="stat unavailable"><span>Unavailable / stale</span><strong>{{index .Counts "unavailable"}}</strong></div></div>
+<article><div class="page-heading"><h2>Fleet map</h2><span class="muted">Worst current condition per host · configured resource and container policy</span></div><div class="fleet-map">{{range .Hosts}}<a class="fleet-cell {{.Health}}" href="/hosts/{{.ID}}" title="{{.ID}}: {{.Health}} / {{.Status}}"><strong>{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</strong><span>{{.Health}}</span></a>{{else}}<p>No matching hosts on this page.</p>{{end}}</div></article>
+<article><h2>All hosts · worst first</h2><div class="table"><table><thead><tr><th>Host / condition</th><th>CPU</th><th>Memory</th><th>Worst disk</th><th>CPU history</th><th>Uptime</th><th>Contact / collected</th></tr></thead><tbody>
+{{range .Hosts}}<tr><td><a href="/hosts/{{.ID}}">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</a><br><span class="status {{.Health}}">{{.Health}}</span></td><td>{{template "percent" (metricReading "cpu" .CPU)}}</td><td>{{template "percent" (metricReading "memory" .Memory)}}</td><td>{{template "percent" (metricReading "disk" .Disk)}}</td><td><div class="spark chart-panel" data-title="CPU {{.ID}}" data-kind="spark" data-resource="cpu" data-series="{{index $.Sparks .ID}}" data-unit="%" data-percent="true"><div class="plot"></div></div></td><td>{{.Uptime}}</td><td><span class="status {{.Status}}">{{.Status}}</span><br><small>{{if .Sample.At.IsZero}}No readings{{else}}{{stamp .Sample.At}}{{end}}</small></td></tr>{{end}}
+</tbody></table></div></article></section>
+{{end}}{{if eq .View "resources"}}
+<section id="resources"><p class="eyebrow">Resource Views</p><h2 class="section-title">Where the load is</h2><p class="muted">CPU cells show peak usage; comparison lines show weighted averages. Empty cells are missing data. Memory box size is host RAM, colour is usage; stale hosts are excluded.</p><div class="chart-grid">
+{{range .Charts}}<figure class="chart-panel {{if eq .Kind "heatmap"}}wide{{end}}" data-resource="{{.Resource}}" data-kind="{{.Kind}}" data-series="{{.Data}}" data-unit="{{.Unit}}" data-percent="{{eq .Unit "%"}}"><figcaption><h2>{{.Title}}</h2></figcaption><div class="plot"></div><p class="chart-readout muted" aria-live="off"></p><noscript>Enable JavaScript for charts. Host readings are available in Fleet Overview.</noscript></figure>{{end}}
+</div><details><summary>CPU history table (UTC)</summary><div class="table" id="fleet-history-table"></div><noscript>Open an individual host for its server-rendered history tables.</noscript></details></section>
+{{end}}{{if eq .View "metrics"}}
+<section id="metrics"><p class="eyebrow">Fleet Metrics</p><h2 class="section-title">Usage across the fleet</h2><article><h2>Filesystems · fullest first</h2><p class="muted">Last received readings; check contact and collection times in the host details before acting.</p><div class="table"><table><thead><tr><th>Host</th><th>Mount</th><th>Used</th><th>Total</th><th>Usage</th></tr></thead><tbody>{{range .Volumes}}<tr><td><a href="/hosts/{{.Host}}">{{.Name}}</a></td><td>{{.Mount}}</td><td>{{bytes .Used}}</td><td>{{bytes .Total}}</td><td><meter class="{{.State}}" min="0" max="100" value="{{.Percent}}">{{number .Percent}}%</meter> {{number .Percent}}%</td></tr>{{else}}<tr><td colspan="5">No valid filesystem readings.</td></tr>{{end}}</tbody></table></div></article>
+<div class="rank-grid">{{range $metric,$rows := .Ranks}}<article><h2>Top {{$metric}}</h2><p class="muted">Fresh readings only{{if eq $metric "Network"}} · aggregate RX + TX (bytes/s){{end}}</p><ol class="rank-list">{{range $rows}}<li><a href="/hosts/{{.ID}}">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</a><strong>{{if eq $metric "CPU"}}{{reading .CPU}}%{{else if eq $metric "Memory"}}{{reading .Memory}}%{{else}}{{reading .Network}} B/s{{end}}</strong></li>{{else}}<li>No available readings.</li>{{end}}</ol></article>{{end}}</div></section>
+{{end}}{{if eq .View "conditions"}}
+<section id="conditions"><p class="eyebrow">Alerts &amp; Hosts</p><h2 class="section-title">Current conditions and containers</h2><p class="muted">Threshold highlighting and observed state only—not persisted alerts or application availability checks.</p><article><h2>Conditions needing attention</h2><div class="table"><table><thead><tr><th>Host</th><th>Signal</th><th>Condition</th><th>Detail</th></tr></thead><tbody>{{range .Conditions}}<tr><td><a href="/hosts/{{.Host}}">{{.Name}}</a></td><td>{{.Kind}}</td><td><span class="status {{.State}}">{{.State}}</span></td><td>{{.Detail}}</td></tr>{{else}}<tr><td colspan="4">No current threshold or state conditions.</td></tr>{{end}}</tbody></table></div></article><div class="host-grid">{{range .Hosts}}{{$host := .ID}}<article><div class="page-heading"><h2><a href="/hosts/{{.ID}}">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</a></h2><span class="status {{.Status}}">{{.Status}}</span></div><p class="muted">{{len .Sample.Containers}} containers · agent {{.Sample.AgentVersion}} · last contact {{if .Seen.IsZero}}never{{else}}{{stamp .Seen}}{{end}}</p><div class="container-list">{{range .Sample.Containers}}<span class="container-chip {{containerState $host .}}">{{containerDetail .}} · {{.Restarts}} restarts</span>{{else}}<span class="muted">No container observations.</span>{{end}}</div></article>{{end}}</div></section>
+{{end}}</div>
+<nav aria-label="Fleet pages">{{if .Offset}}<a href="?view={{.View}}&amp;offset={{.Previous}}&amp;range={{.Range}}&amp;q={{.Query}}">Previous</a>{{end}} {{if .More}}<a href="?view={{.View}}&amp;offset={{.Next}}&amp;range={{.Range}}&amp;q={{.Query}}">Next</a>{{end}}</nav>
+{{template "foot"}}{{end}}
+
+{{define "percent"}}{{if ne .Value nil}}<meter class="{{.State}}" min="0" max="100" value="{{.Value}}">{{reading .Value}}%</meter> <span class="{{.State}}">{{reading .Value}}%</span>{{else}}<span class="muted">Unavailable</span>{{end}}{{end}}
+
+{{define "host"}}{{template "head"}}
+<div class="page-heading"><div><p class="eyebrow"><a href="/">Fleet</a> / Host dashboard</p><h1>{{if .Host.Name}}{{.Host.Name}}{{else}}{{.Host.ID}}{{end}}</h1></div>{{template "logout" .}}</div>
+<form class="toolbar" method="get">
+<label>Node <select id="node-select"><option value="{{.Host.ID}}">{{.Host.ID}}</option>{{range .Nodes}}{{if ne .ID $.Host.ID}}<option value="{{.ID}}">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</option>{{end}}{{end}}</select></label>
+<label>Time range <select name="range"><option value="1h" {{if or (eq .Range "") (eq .Range "1h")}}selected{{end}}>Last hour</option><option value="24h" {{if eq .Range "24h"}}selected{{end}}>Last 24 hours</option><option value="7d" {{if eq .Range "7d"}}selected{{end}}>Last 7 days</option><option value="30d" {{if eq .Range "30d"}}selected{{end}}>Last 30 days</option></select></label><button>Apply range</button>
+<label>Updates <select id="refresh-select"><option value="live">On new samples</option><option value="0">Paused</option></select></label><button type="button" id="refresh-now">Refresh now</button>
+</form>
+<p id="refresh-status" class="muted" role="status" aria-live="polite">Connecting to sample updates. Agents collect every 60 seconds.</p>
+<section id="dashboard-data" data-host="{{.Host.ID}}" data-start="{{.Start}}" data-end="{{.End}}" data-gap="{{.Gap}}" data-thresholds="{{resourcePolicy}}">
+<div class="page-heading"><span class="status {{.Host.Status}}">{{.Host.Status}}</span><p class="muted">{{if .Host.Seen.IsZero}}No uploads yet{{else}}Collected {{stamp .Host.Sample.At}} · last contact {{stamp .Host.Seen}} UTC{{end}}</p></div>
+<p class="muted">Overview shows last received readings, not live values. Contact status is not application health.</p>
+<ul>{{range .Host.Sample.Errors}}<li role="alert">{{.}}</li>{{end}}</ul>
+<div class="stats">{{range .Host.Stats}}<div class="stat"><span>{{.Label}}</span><strong>{{.Value}}</strong></div>{{end}}</div>
+<p class="muted">{{if .Summary}}Summary bucket averages. Memory and disk percentages are ratios of bucket averages.{{else}}Raw observations.{{end}} Missing intervals are gaps, not zeros. Chart times use your browser timezone.</p>
+{{if .Truncated}}<p role="alert">Result limit reached. Charts and tables show partial history; choose a shorter range.</p>{{end}}
+<div class="chart-grid">{{range .Charts}}<figure class="chart-panel" data-resource="{{.Resource}}" data-series="{{.Data}}" data-unit="{{.Unit}}" data-percent="{{.Percent}}"><figcaption><h2>{{.Title}}</h2><p class="muted">{{.Note}}</p></figcaption><div class="plot"></div><p class="chart-readout" aria-live="off">Drag to zoom; toggle series in the legend. Focus chart and use arrow keys to inspect.</p><noscript>Enable JavaScript for charts, or use the data tables below.</noscript></figure>{{end}}</div>
+<details><summary>Raw metrics and history tables</summary>
+<h2>Last collected metrics</h2>
+<div class="table"><table><thead><tr><th>Metric (unit in name)</th><th>Entity</th><th>Value</th></tr></thead><tbody>
+{{range .Host.Sample.Metrics}}<tr><td>{{.Name}}</td><td>{{.Entity}}</td><td>{{number .Value}}</td></tr>{{end}}
+</tbody></table></div>
+<h2>History</h2>
+<nav aria-label="History range"><a href="?range=1h">1 hour</a> · <a href="?range=24h">24 hours</a> · <a href="?range=7d">7 days</a> · <a href="?range=30d">30 days</a></nav>
+<p>{{if .Summary}}Summary buckets; count shows available observations.{{else}}Raw observations.{{end}} Missing intervals are not zeros.</p>
+{{if .Truncated}}<p role="alert">Result limit reached. Choose a shorter range.</p>{{end}}
+<div class="table"><table><thead><tr><th>UTC time</th><th>Metric</th><th>Entity</th><th>Average</th><th>Min</th><th>Peak</th><th>Samples</th></tr></thead><tbody>
+{{range .Points}}<tr><td>{{stamp .At}}</td><td>{{.Name}}</td><td>{{.Entity}}</td><td>{{number .Average}}</td><td>{{number .Minimum}}</td><td>{{number .Maximum}}</td><td>{{.Count}}</td></tr>
+{{else}}<tr><td colspan="7">No observations in this range.</td></tr>{{end}}
+</tbody></table></div>
+<h2>Container and collection history</h2>
+<p>Summary views retain the last observed state in each bucket, not every transition.</p>
+<div class="table"><table><thead><tr><th>Collected (UTC)</th><th>Container states</th><th>Collection errors</th></tr></thead><tbody>
+{{range .States}}<tr><td>{{stamp .At}}</td><td>{{range .Containers}}<p>{{containerDetail .}} ({{.Restarts}} restarts)</p>{{end}}</td><td>{{range .Errors}}<p>{{.}}</p>{{end}}</td></tr>
+{{else}}<tr><td colspan="3">No state observations in this range.</td></tr>{{end}}
+</tbody></table></div>
+</details>
+</section>
+<h2>Containers</h2>
+<p class="muted">Container controls show status at page load; reload page to update this list. CPU: 100% equals one core. Memory excludes inactive file cache.</p>
+{{range .Host.LiveContainers}}
+<article><div class="page-heading"><h3>{{.Name}}</h3><span class="status {{containerState $.Host.ID .}}">{{.State}}</span></div><p>{{containerDetail .}} · restarts {{.Restarts}}</p>
+{{if $.Host.CanFetchLogs}}<form method="post" action="/hosts/{{$.Host.ID}}/logs/{{.ID}}" hx-post="/hosts/{{$.Host.ID}}/logs/{{.ID}}" hx-target="#logs">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Fetch recent logs</button></form>{{else}}<p class="muted">Log fetching requires a fresh keiryō agent.</p>{{end}}</article>
+{{else}}<p>No container data.</p>{{end}}
+<section id="logs" aria-live="polite"><p>Logs are fetched on demand and are not archived. Fetches may take up to the configured timeout.</p></section>
+{{template "foot"}}{{end}}
+
+{{define "logs"}}
+<section aria-live="polite"><h2>Recent container logs</h2>{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}<pre>{{.Text}}</pre></section>
+{{end}}

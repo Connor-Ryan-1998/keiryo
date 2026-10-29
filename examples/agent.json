@@ -1,0 +1,12 @@
+{
+  "host_id": "node-1",
+  "display_name": "Example Linux host",
+  "hub_url": "http://127.0.0.1:9081",
+  "credential_file": "node-1.token",
+  "interval_seconds": 60,
+  "buffer_samples": 60,
+  "poll_seconds": 5,
+  "docker_socket": "/var/run/docker.sock",
+  "exclude_interfaces": ["lo"],
+  "exclude_filesystems": ["squashfs"]
+}

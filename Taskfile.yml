@@ -1,0 +1,233 @@
+version: "3"
+output: interleaved
+
+vars:
+  OTEL_COLLECTOR_IMAGE: otel/opentelemetry-collector-contrib:0.164.0
+
+tasks:
+  test:
+    desc: "Test monitoring. SUITE=unit (default)|go|agent|ui|browser|integration|otlp|otlp-integration|recovery|preview"
+    vars:
+      SUITE: '{{.SUITE | default "unit"}}'
+    requires:
+      vars:
+        - name: SUITE
+          enum: [unit, go, agent, ui, browser, integration, otlp, otlp-integration, recovery, preview]
+    cmds:
+      - task: 'test:{{.SUITE}}'
+
+  build:
+    desc: "Build monitoring. TARGET=all (default)|native|linux|agent-native; Linux ARCH=amd64|arm64"
+    vars:
+      TARGET: '{{.TARGET | default "all"}}'
+      ARCH:
+        sh: >-
+          {{if eq .TARGET "linux"}}docker version --format '{{"{{.Server.Arch}}"}}'{{else}}true{{end}}
+    requires:
+      vars:
+        - name: TARGET
+          enum: [all, native, linux, agent-native]
+    cmds:
+      - task: 'build:{{.TARGET}}'
+
+  format:
+    desc: "Format source. COMPONENT=go (default)|agent"
+    vars:
+      COMPONENT: '{{.COMPONENT | default "go"}}'
+    requires:
+      vars:
+        - name: COMPONENT
+          enum: [go, agent]
+    cmds:
+      - task: 'format:{{.COMPONENT}}'
+
+  lock:
+    desc: Resolve Rust dependencies after intentional manifest changes
+    dir: agent-rust
+    cmds:
+      - cargo generate-lockfile
+
+  test:agent:
+    internal: true
+    dir: agent-rust
+    cmds:
+      - cargo test --locked {{.CLI_ARGS}}
+
+  lint:
+    desc: Check Rust formatting and Clippy
+    dir: agent-rust
+    cmds:
+      - cargo fmt --check
+      - cargo clippy --locked --all-targets -- -D warnings
+
+  format:agent:
+    internal: true
+    dir: agent-rust
+    cmds:
+      - cargo fmt
+
+  agent:build:native:
+    internal: true
+    dir: agent-rust
+    cmds:
+      - cargo build --locked --release
+      - mkdir -p ../bin
+      - cp target/release/monitoring-agent ../bin/monitoring-agent
+
+  agent:fixture:
+    internal: true
+    dir: agent-rust
+    cmds:
+      - cargo build --locked --example outbox_fixture
+
+  test:recovery:
+    internal: true
+    deps: [agent:fixture, agent:build:native]
+    cmds:
+      - MONITORING_REQUIRE_RUST_FIXTURE=1 go test -race -count=1 ./tests/otlp -run 'TestRust(Outbox|Agent|Mac)'
+
+  agent:build:linux:
+    internal: true
+    method: timestamp
+    sources:
+      - agent-rust/src/**/*.rs
+      - agent-rust/Cargo.*
+      - agent-rust/rust-toolchain.toml
+      - Dockerfile
+    generates:
+      - bin/monitoring-agent-linux-{{.ARCH}}
+    requires:
+      vars:
+        - name: ARCH
+          enum: [amd64, arm64]
+    cmds:
+      - docker buildx build --platform linux/{{.ARCH}} --target agent-export --output type=local,dest=bin/rust-linux-{{.ARCH}} .
+      - cp bin/rust-linux-{{.ARCH}}/monitoring-agent bin/monitoring-agent-linux-{{.ARCH}}
+
+  test:otlp:
+    internal: true
+    cmds:
+      - go test -race ./internal/otlp ./internal/store ./internal/hub ./internal/agent ./internal/config
+
+  format:go:
+    internal: true
+    cmds:
+      - gofmt -w .
+
+  test:ui:
+    internal: true
+    cmds:
+      - node --test tests/ui/dashboard.test.cjs
+
+  test:browser:
+    internal: true
+    deps: [build:native]
+    cmds:
+      - uv run --locked --with playwright==1.57.0 python tests/ui/browser.py
+
+  test:unit:
+    internal: true
+    cmds:
+      - task: test:agent
+      - task: agent:build:native
+      - task: agent:fixture
+      - task: test:go
+      - task: test:preview
+
+  test:go:
+    internal: true
+    cmds:
+      - go test -race ./... {{.CLI_ARGS}}
+
+  preview:
+    desc: Preview this machine with an isolated local hub and real agent (Ctrl+C stops both)
+    deps: [build:native]
+    cmds:
+      - python tools/preview.py
+
+  test:preview:
+    internal: true
+    deps: [build:native]
+    cmds:
+      - python -m unittest discover -s tools -p 'test_*.py'
+
+  build:native:
+    internal: true
+    cmds:
+      - task: agent:build:native
+      - go build -trimpath -o bin/monitoring ./cmd/monitoring
+
+  build:agent-native:
+    internal: true
+    cmds:
+      - task: agent:build:native
+
+  build:all:
+    internal: true
+    cmds:
+      - task: build:native
+      - task: build:linux
+        vars: {ARCH: amd64}
+      - task: build:linux
+        vars: {ARCH: arm64}
+
+  build:linux:
+    internal: true
+    requires:
+      vars:
+        - name: ARCH
+          enum: [amd64, arm64]
+    cmds:
+      - CGO_ENABLED=0 GOOS=linux GOARCH={{.ARCH}} go build -trimpath -o bin/monitoring-linux-{{.ARCH}} ./cmd/monitoring
+      - task: agent:build:linux
+        vars: {ARCH: '{{.ARCH}}'}
+
+  test:integration:
+    internal: true
+    vars:
+      DOCKER_ARCH:
+        sh: docker version --format '{{"{{.Server.Arch}}"}}'
+    cmds:
+      - task: agent:build:linux
+        vars:
+          ARCH:
+            sh: docker version --format '{{"{{.Server.Arch}}"}}'
+      - |
+        ARCH=$(docker version --format '{{"{{.Server.Arch}}"}}')
+        CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go test -c -tags integration -o bin/integration.test ./tests/integration
+      - >-
+        docker run --rm --network none --pid host --read-only --tmpfs /tmp --memory 128m
+        --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 128
+        -v /var/run/docker.sock:/var/run/docker.sock:ro -v /:/host:ro
+        -v "{{.TASKFILE_DIR}}/bin:/tests:ro"
+        -e HOST_PROC=/host/proc -e HOST_SYS=/host/sys -e HOST_ETC=/host/etc -e HOST_ROOT=/host
+        -e MONITORING_AGENT_BINARY=/tests/monitoring-agent-linux-{{.DOCKER_ARCH}}
+        --entrypoint /tests/integration.test golang:1.27.0-bookworm -test.v
+
+  test:otlp-integration:
+    internal: true
+    vars:
+      DOCKER_ARCH:
+        sh: docker version --format '{{"{{.Server.Arch}}"}}'
+    cmds:
+      - task: agent:build:linux
+        vars:
+          ARCH:
+            sh: docker version --format '{{"{{.Server.Arch}}"}}'
+      - |
+        ARCH=$(docker version --format '{{"{{.Server.Arch}}"}}')
+        CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go test -c -tags integration -o bin/otlp.test ./tests/otlp
+      - >-
+        docker run --rm --network none --pid host --read-only --tmpfs /tmp
+        --user 0 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 128
+        -v /var/run/docker.sock:/var/run/docker.sock:ro -v /:/host:ro
+        -v "{{.TASKFILE_DIR}}/bin:/tests:ro"
+        -e HOST_PROC=/host/proc -e HOST_SYS=/host/sys -e HOST_ETC=/host/etc -e HOST_ROOT=/host
+        -e COLLECTOR_IMAGE={{.OTEL_COLLECTOR_IMAGE}}
+        -e MONITORING_AGENT_BINARY=/tests/monitoring-agent-linux-{{.DOCKER_ARCH}}
+        --entrypoint /tests/otlp.test {{.OTEL_COLLECTOR_IMAGE}} -test.v
+
+  bench:
+    desc: Benchmark ingestion and retention
+    cmds:
+      - go test -run '^$' -bench . -benchmem ./internal/store ./tests/load
