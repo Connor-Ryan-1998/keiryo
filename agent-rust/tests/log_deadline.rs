@@ -17,6 +17,8 @@ fn log_deadline_includes_version_negotiation_and_inspection() {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
             };
+            conn.set_nonblocking(false).unwrap();
+            conn.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
             let mut buffer = [0u8; 4096];
             let n = conn.read(&mut buffer).unwrap();
             let request = String::from_utf8_lossy(&buffer[..n]);

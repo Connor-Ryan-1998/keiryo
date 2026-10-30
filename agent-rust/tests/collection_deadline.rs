@@ -26,6 +26,7 @@ fn collection_deadline_covers_negotiation_list_inspection_and_stats() {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 };
+                conn.set_nonblocking(false).unwrap();
                 conn.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
                 let mut buffer = [0u8; 4096];
                 let n = conn.read(&mut buffer).unwrap();
