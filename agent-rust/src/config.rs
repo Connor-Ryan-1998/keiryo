@@ -2,6 +2,7 @@ use crate::Result;
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::Read,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -31,6 +32,7 @@ pub struct Config {
     pub queue_database: PathBuf,
     pub queue_retention_seconds: u64,
     pub queue_max_bytes: u64,
+    pub backup_status_files: BTreeMap<String, PathBuf>,
 }
 
 fn null_vec<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
@@ -57,6 +59,7 @@ impl Default for Config {
             queue_database: "agent.redb".into(),
             queue_retention_seconds: 7200,
             queue_max_bytes: 268435456,
+            backup_status_files: BTreeMap::new(),
         }
     }
 }
@@ -133,6 +136,19 @@ impl Config {
             "invalid queue or Docker configuration"
         );
         let parent = std::path::absolute(path)?.parent().unwrap().to_path_buf();
+        ensure!(
+            c.backup_status_files.len() <= 64,
+            "too many backup status files"
+        );
+        for (job, file) in &mut c.backup_status_files {
+            ensure!(
+                valid_id(job) && !file.as_os_str().is_empty(),
+                "invalid backup job or status path"
+            );
+            if file.is_relative() {
+                *file = parent.join(&*file);
+            }
+        }
         for p in [
             &mut c.credential_file,
             &mut c.docker_socket,

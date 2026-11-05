@@ -74,6 +74,7 @@ func run(ctx context.Context, args []string) error {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go h.Maintenance(child)
+	go h.Notifications(child)
 	servers := []*http.Server{{Handler: h.UIHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: time.Duration(c.LogTimeoutSeconds+15) * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}, {Handler: h.AgentHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}}
 	servers[0].BaseContext = func(net.Listener) context.Context { return child }
 	failures := make(chan error, 2)

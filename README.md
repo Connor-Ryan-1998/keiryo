@@ -72,6 +72,8 @@ publish the image or supply deployment configuration.
 ## Reference
 
 - [Configuration fields and alert policy](docs/reference.md#configuration)
+- [Optional Discord notifications for all alerts](docs/reference.md#discord-notifications)
+- [Backup freshness and failure monitoring](docs/reference.md#expected-backup-jobs)
 - [OTLP, durable delivery and upgrades](docs/reference.md#opentelemetry-metrics)
 - [Authentication and proxy requirements](docs/reference.md#authentication-and-network-boundary)
 - [Storage, backups and limits](docs/reference.md#storage-backups-and-limits)

@@ -18,6 +18,8 @@ import (
 
 func targets(p otlp.Point) []string {
 	switch p.Name {
+	case "keiryo.backup.status_valid", "keiryo.backup.result", "keiryo.backup.started", "keiryo.backup.finished", "keiryo.backup.last_success":
+		return []string{"backup_status_valid", "backup_result", "backup_started", "backup_finished", "backup_last_success"}
 	case "system.uptime":
 		return []string{"uptime_seconds"}
 	case "system.cpu.load_average.1m":

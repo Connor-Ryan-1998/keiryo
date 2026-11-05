@@ -48,18 +48,17 @@ func metricTime(sample protocol.Sample, m protocol.Metric) time.Time {
 
 // currentReadings filters each measurement, not the timestamp of an unrelated batch.
 func (h *Hub) currentReadings(host store.Host) store.Host {
-	if !host.Sample.Incremental {
-		return host
-	}
 	original := host.Sample
-	host.Sample.Metrics = nil
-	for _, m := range original.Metrics {
-		at := metricTime(original, m)
-		if !at.IsZero() && time.Since(at) < time.Duration(h.config.StaleSeconds)*time.Second {
-			host.Sample.Metrics = append(host.Sample.Metrics, m)
+	if original.Incremental {
+		host.Sample.Metrics = nil
+		for _, m := range original.Metrics {
+			at := metricTime(original, m)
+			if !at.IsZero() && time.Since(at) < time.Duration(h.config.StaleSeconds)*time.Second {
+				host.Sample.Metrics = append(host.Sample.Metrics, m)
+			}
 		}
 	}
-	if original.Incremental && !h.stateFresh(original) {
+	if !h.stateFresh(original) {
 		host.Sample.Errors = nil
 		host.Sample.StateAt = time.Time{}
 		host.Sample.Containers = nil

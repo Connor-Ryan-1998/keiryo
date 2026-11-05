@@ -39,8 +39,16 @@ type Hub struct {
 }
 
 func New(c config.Hub, s *store.Store) (*Hub, error) {
+	if err := c.ValidateBackupJobs(); err != nil {
+		return nil, err
+	}
 	if err := c.AlertPolicy.Validate(); err != nil {
 		return nil, err
+	}
+	if c.DiscordWebhookFile != "" {
+		if _, err := discordWebhook(c.DiscordWebhookFile); err != nil {
+			return nil, err
+		}
 	}
 	h := &Hub{config: c, store: s, tokens: map[string][32]byte{}, slots: make(chan struct{}, c.MaxRequests), uiSlots: make(chan struct{}, c.MaxRequests), eventSlots: make(chan struct{}, c.MaxRequests), subscribers: map[chan string]struct{}{}}
 	if err := s.Configure(context.Background(), c.BucketSeconds); err != nil {

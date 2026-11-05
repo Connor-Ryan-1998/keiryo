@@ -81,6 +81,9 @@ JSON files override defaults; restart to apply. Unknown keys, multiple JSON valu
 | `stale_seconds`, `offline_seconds` | `180`, `300` since accepted contact |
 | `disk_health_mountpoints` | `[]` (all mounts); exact clean absolute mountpoints for disk health, alerts and the fleet storage table, e.g. `["/"]`. Collection and detailed host charts are unchanged. |
 | `alert_policy` | Resource thresholds and container severity/lifecycle policy; see below. Omitted fields retain defaults. |
+| `discord_webhook_file` | Empty (disabled); optional restricted file containing an HTTPS Discord webhook URL. Applies to every alert category. |
+| `alert_pending_seconds` | `120`; condition transitions must persist this long before notification, including recovery. Range `0`–`86400`. |
+| `backup_jobs` | Empty; expected `{host, job, max_age_seconds}` entries. Hosts must be configured agents; job IDs must be unique per host. |
 | `future_seconds` | `300`; maximum future sample clock skew |
 | `max_body_bytes` | `2097152`; agent request limit |
 | `max_entities` | `2048` metrics/containers per sample |
@@ -92,7 +95,21 @@ Changing retention is supported. Changing the summary bucket grid requires a new
 
 ### Alert policy
 
-The hub receives observations from agents and evaluates a policy supplied through its JSON configuration. No service names or deployment-specific exceptions are built into the application. This controls dashboard conditions, aggregate host health, meters, container badges and chart threshold markers/colours—not notifications or persisted alerts.
+The hub receives observations from agents and evaluates a policy supplied through its JSON configuration. No service names or deployment-specific exceptions are built into the application. The same conditions control dashboard health and optional Discord notifications: contact/measurement availability, CPU, memory, disk, containers, collection errors and expected backups.
+
+### Discord notifications
+
+Set `discord_webhook_file` to a separate regular file, mode `0600` or stricter. Its contents must be an HTTPS `discord.com/api/webhooks/...` or `discordapp.com/api/webhooks/...` URL without query parameters. Relative paths resolve against the hub configuration directory. The hub validates the secret at startup and rereads it for delivery; never put the URL into examples, telemetry, browser configuration or logs. Omit the setting to disable notifications without disabling dashboard conditions.
+
+The background worker evaluates configured hosts every 30 seconds, even without a browser. A condition must persist for `alert_pending_seconds` (default 120) before activation, severity-change or recovery delivery. Changing a reading's numeric value does not resend an unchanged severity. Container names provide identity across replacement; missing containers and missing measurements do not prove recovery. A fresh complete state snapshot can clear collection errors. State and retry deadlines persist in SQLite. Restarting the hub does not resend acknowledged alerts. Notifications suppress Discord mentions and bound message size.
+
+Requests time out after eight seconds. Temporary failures back off from 30 seconds to one hour; rate limits honor `Retry-After`, with a shared persistent webhook cooldown. Permanent HTTP rejections retry hourly so a repaired webhook can recover. Delivery is at-least-once: a crash after Discord accepts a message but before SQLite records its acknowledgement can duplicate that message. Conditions that clear before any activation is delivered do not send a recovery-only notification. A continuously unavailable webhook can coalesce intermediate state changes into the latest condition.
+
+The hub cannot report its own complete outage. Use an independent watchdog for that. Cold backup downtime can postpone delivery until the hub restarts; the pending period filters short interruptions but is not a scheduled maintenance window.
+
+### Expected backup jobs
+
+Configure `backup_jobs`, for example `[{"host":"node-1","job":"daily","max_age_seconds":108000}]`, and the corresponding agent file below. The example allows 30 hours between successful daily backups. A failed last run is critical immediately after the pending period; no successful run within the deadline is also critical. Missing, invalid or stale status is unavailable, never healthy. Running jobs retain their previous success time and become overdue when that success passes the deadline. Healthy jobs and last success times remain visible on **Alerts & Hosts**. Success means the backup command, retention and application restart finished, not that an isolated restore passed.
 
 Example hub configuration fragment (replace the example host/container names):
 
@@ -140,9 +157,14 @@ Example hub configuration fragment (replace the example host/container names):
 | `docker_socket` | `/var/run/docker.sock` |
 | `exclude_interfaces` | `["lo"]`; exact names |
 | `exclude_filesystems` | `[]`; exact mountpoints or filesystem types; pseudo-filesystems already excluded by collector |
+| `backup_status_files` | `{}`; job ID → status-file path, at most 64 jobs. Relative paths resolve against agent configuration. Container paths must refer to the read-only host mount. |
 | `log_lines`, `log_bytes`, `log_timeout_seconds` | `200`, `262144`, `15`; agent-side upper bounds |
 
 No remote configuration or live reload. Deployment tooling may override these same fields without changing application defaults.
+
+Backup status files are regular non-symlink JSON files of at most 4096 bytes. Write them atomically. Schema: `{"version":1,"started_at":1700000000,"finished_at":1700000060,"last_success_at":1700000060,"result":"success"}`. Times are integer Unix seconds. `result` is `running`, `success` or `failure`; running uses `finished_at:0`, successful completion sets `last_success_at` equal to `finished_at`, and failures preserve the previous success time. Invalid or missing files export only an invalid-status observation, without file contents or raw error messages.
+
+Backup observations use gauge metrics `keiryo.backup.status_valid` and `keiryo.backup.result` (unit `1`; result values running=0, success=1, failure=2), plus `keiryo.backup.started`, `keiryo.backup.finished` and `keiryo.backup.last_success` (unit `s`). Each uses the `backup.job` attribute under the authenticated host resource. These are application-specific metrics, not invented standard semantic conventions. They use the existing OTLP exporter and durable outbox, not the private JSON state endpoint. Collector filters must retain these metrics if backup monitoring is enabled. Upgrade the hub before agents; older hubs reject these unsupported metrics.
 
 ## OpenTelemetry metrics
 

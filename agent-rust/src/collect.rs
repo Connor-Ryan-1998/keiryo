@@ -88,6 +88,7 @@ impl Collection {
         });
     }
 }
+pub mod backups;
 pub mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -106,6 +107,7 @@ impl Collector {
         linux::collect(c, &mut s);
         #[cfg(target_os = "macos")]
         macos::collect(c, &mut s);
+        backups::collect(c, &mut s);
         if self.docker.is_none() {
             self.docker = crate::docker::Docker::new(c).ok();
         }

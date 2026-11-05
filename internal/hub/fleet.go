@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-type condition struct{ Host, Name, Kind, State, Detail string }
+type condition struct{ Host, Name, Kind, State, Detail, Key string }
 type volumeView struct {
 	Host, Name, Mount string
 	Used, Total       float64
@@ -27,6 +27,7 @@ type fleetHost struct {
 	Fresh                      bool
 	Uptime                     string
 	Conditions                 []condition
+	Signals                    []condition
 }
 type fleetChart struct{ Title, Kind, Unit, Data, Resource string }
 
@@ -144,37 +145,47 @@ func (h *Hub) fleetRow(host store.Host) fleetHost {
 	if v, ok := m["uptime_seconds\x00"]; ok {
 		row.Uptime = fmt.Sprintf("%.1f days", v/86400)
 	}
-	add := func(kind, state, detail string) {
+	add := func(key, kind, state, detail string) {
 		if state == "unavailable" {
 			missing = true
 		}
-		row.Conditions = append(row.Conditions, condition{host.ID, hostName(host), kind, state, detail})
+		signal := condition{Host: host.ID, Name: hostName(host), Kind: kind, State: state, Detail: detail, Key: key}
+		row.Signals = append(row.Signals, signal)
+		if state != "healthy" {
+			row.Conditions = append(row.Conditions, signal)
+		}
 		if state != "unavailable" && severity(state) > severity(row.Health) {
 			row.Health = state
 		}
 	}
 	if !row.Fresh {
-		add("Contact / measurements", "unavailable", row.Status+"; latest readings may be old")
+		add("contact", "Contact / measurements", "unavailable", row.Status+"; latest readings may be old")
 	} else {
+		add("contact", "Contact / measurements", "healthy", "Agent contact and readings restored")
 		for _, reading := range []struct {
 			name, resource string
 			v              *float64
 		}{{"CPU", "cpu", row.CPU}, {"Memory", "memory", row.Memory}, {"Disk", "disk", row.Disk}} {
 			if reading.v == nil {
 				missing = true
-				add(reading.name, "unavailable", "No valid reading")
-			} else if state := h.metricReading(reading.resource, reading.v).State; state != "healthy" {
-				add(reading.name, state, fmt.Sprintf("%.1f%% used", *reading.v))
+				add(reading.resource, reading.name, "unavailable", "No valid reading")
+			} else {
+				add(reading.resource, reading.name, h.metricReading(reading.resource, reading.v).State, fmt.Sprintf("%.1f%% used", *reading.v))
 			}
 		}
 	}
 	for _, c := range host.Sample.Containers {
-		if state := h.containerState(host.ID, c); state != "healthy" {
-			add("Container", state, containerDetail(c))
+		key := c.Name
+		if key == "" {
+			key = c.ID
 		}
+		add("container/"+key, "Container", h.containerState(host.ID, c), containerDetail(c))
 	}
 	for _, err := range host.Sample.Errors {
-		add("Collection", "warning", err)
+		add("collection/"+err, "Collection", "warning", err)
+	}
+	for _, signal := range h.backupSignals(host) {
+		add(signal.Key, signal.Kind, signal.State, signal.Detail)
 	}
 	if !row.Fresh || (missing && row.Health == "healthy") {
 		row.Health = "unavailable"

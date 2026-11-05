@@ -204,6 +204,9 @@ func Normalize(req *collectorpb.ExportMetricsServiceRequest, host string, now ti
 					if strings.HasPrefix(family, "system.memory.") || family == "system.linux.memory.available" || family == "keiryo.memory.available" {
 						family = "memory"
 					}
+					if strings.HasPrefix(family, "keiryo.backup.") {
+						family = "backup"
+					}
 					p.Group = hash([]any{scope, family, extra})
 					out = append(out, p)
 				}
@@ -231,6 +234,24 @@ func valid(p *Point, resource map[string]string) bool {
 	unit := ""
 	wantCounter := false
 	switch p.Name {
+	case "keiryo.backup.status_valid", "keiryo.backup.result", "keiryo.backup.started", "keiryo.backup.finished", "keiryo.backup.last_success":
+		unit = "s"
+		p.Entity = p.Attributes["backup.job"]
+		if !config.ValidID(p.Entity) || p.Value != math.Trunc(p.Value) {
+			return false
+		}
+		if p.Name == "keiryo.backup.status_valid" || p.Name == "keiryo.backup.result" {
+			unit = "1"
+			limit := 2.0
+			if p.Name == "keiryo.backup.status_valid" {
+				limit = 1
+			}
+			if p.Value > limit {
+				return false
+			}
+		} else if p.Value > float64(p.At.Unix()+300) {
+			return false
+		}
 	case "system.uptime":
 		unit = "s"
 	case "system.cpu.load_average.1m":
@@ -331,6 +352,31 @@ func Project(points []Point) []Measurement {
 			if value >= 0 && value <= 1e30 && !math.IsNaN(value) && !math.IsInf(value, 0) {
 				out = append(out, Measurement{protocol.Metric{Name: name, Entity: k.entity, Value: value, Weight: weight}, ps[0].At, k.group})
 			}
+		}
+		if strings.HasPrefix(ps[0].Name, "keiryo.backup.") {
+			values := map[string]float64{}
+			for _, p := range ps {
+				values[strings.TrimPrefix(p.Name, "keiryo.backup.")] = p.Value
+			}
+			valid := len(values) == 5 && values["status_valid"] == 1 && values["started"] > 0
+			switch values["result"] {
+			case 0:
+				valid = valid && values["finished"] == 0 && values["last_success"] <= values["started"]
+			case 1:
+				valid = valid && values["finished"] >= values["started"] && values["last_success"] == values["finished"]
+			case 2:
+				valid = valid && values["finished"] >= values["started"] && values["last_success"] <= values["started"]
+			default:
+				valid = false
+			}
+			if !valid {
+				add("backup_status_valid", 0, 1)
+			} else {
+				for name, value := range values {
+					add("backup_"+name, value, 1)
+				}
+			}
+			continue
 		}
 		values := map[string]float64{}
 		states := map[string]float64{}

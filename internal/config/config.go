@@ -41,6 +41,9 @@ type Hub struct {
 	LogQueue              int               `json:"log_queue"`
 	DiskHealthMountpoints []string          `json:"disk_health_mountpoints"`
 	AlertPolicy           AlertPolicy       `json:"alert_policy"`
+	DiscordWebhookFile    string            `json:"discord_webhook_file,omitempty"`
+	AlertPendingSeconds   int               `json:"alert_pending_seconds"`
+	BackupJobs            []BackupJob       `json:"backup_jobs,omitempty"`
 }
 
 type Agent struct {
@@ -61,7 +64,7 @@ type Agent struct {
 }
 
 func DefaultHub() Hub {
-	return Hub{UIListen: "127.0.0.1:9080", AgentListen: "127.0.0.1:9081", Database: "monitoring.db", AuthMode: "local", PublicURL: "http://127.0.0.1:9080", Agents: map[string]string{}, RawHours: 24, SummaryDays: 30, BucketSeconds: 300, StorageBytes: 1 << 30, StaleSeconds: 180, OfflineSeconds: 300, FutureSeconds: 300, MaxBodyBytes: 2 << 20, MaxEntities: 2048, MaxRequests: 32, LogLines: 200, LogBytes: 256 << 10, LogTimeoutSeconds: 15, LogQueue: 32, AlertPolicy: defaultAlertPolicy()}
+	return Hub{UIListen: "127.0.0.1:9080", AgentListen: "127.0.0.1:9081", Database: "monitoring.db", AuthMode: "local", PublicURL: "http://127.0.0.1:9080", Agents: map[string]string{}, RawHours: 24, SummaryDays: 30, BucketSeconds: 300, StorageBytes: 1 << 30, StaleSeconds: 180, OfflineSeconds: 300, FutureSeconds: 300, MaxBodyBytes: 2 << 20, MaxEntities: 2048, MaxRequests: 32, LogLines: 200, LogBytes: 256 << 10, LogTimeoutSeconds: 15, LogQueue: 32, AlertPolicy: defaultAlertPolicy(), AlertPendingSeconds: 120}
 }
 func DefaultAgent() Agent {
 	return Agent{IntervalSeconds: 60, BufferSamples: 60, PollSeconds: 5, DockerSocket: "/var/run/docker.sock", ExcludeInterfaces: []string{"lo"}, LogBytes: 256 << 10, LogLines: 200, LogTimeoutSeconds: 15}
@@ -108,6 +111,13 @@ func LoadHub(path string) (Hub, error) {
 	if err := c.AlertPolicy.Validate(); err != nil {
 		return c, err
 	}
+	if err := c.ValidateBackupJobs(); err != nil {
+		return c, err
+	}
+	if c.AlertPendingSeconds < 0 || c.AlertPendingSeconds > 86400 {
+		return c, errors.New("alert_pending_seconds must be between 0 and 86400")
+	}
+	c.DiscordWebhookFile = relative(path, c.DiscordWebhookFile)
 	for _, mount := range c.DiskHealthMountpoints {
 		if !pathpkg.IsAbs(mount) || pathpkg.Clean(mount) != mount {
 			return c, errors.New("disk_health_mountpoints requires clean absolute mountpoints")
