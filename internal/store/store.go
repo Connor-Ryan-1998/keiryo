@@ -111,6 +111,10 @@ func Open(path string) (*Store, error) {
 			return nil, migrateErr
 		}
 	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS sample_state_history ON samples(host,at) WHERE data!='{}'`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
