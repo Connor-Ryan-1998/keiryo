@@ -82,8 +82,128 @@ func TestMigratesVersionOneAndPreservesMetrics(t *testing.T) {
 	if version != 3 || count != 1 {
 		t.Fatal("migration lost data or version")
 	}
+	assertStateHistoryIndex(t, s)
 	if err = s.Ingest(context.Background(), protocol.Sample{HostID: "n", ID: "new", At: time.Now()}, time.Now(), 300); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertStateHistoryIndex(t *testing.T, s *Store) {
+	t.Helper()
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT data FROM samples WHERE host=? AND at>=? AND at<? AND data!='{}' ORDER BY at LIMIT 1000`, "n", 0, 3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err = rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	detail := strings.Join(plan, "\n")
+	if !strings.Contains(detail, "sample_state_history (host=? AND at>? AND at<?)") || strings.Contains(detail, "TEMP B-TREE") {
+		t.Fatalf("state history must seek by host/time without sorting: %s", detail)
+	}
+}
+
+func TestRawStateHistoryUsesSelectiveTimeIndex(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	for i, fixture := range []struct {
+		host   string
+		offset time.Duration
+	}{
+		{"n", time.Minute},
+		{"n", -time.Second},
+		{"n", 0},
+		{"n", time.Hour},
+		{"n", time.Hour + time.Second},
+		{"other", 0},
+	} {
+		x := protocol.Sample{HostID: fixture.host, ID: fmt.Sprint(i), At: now.Add(fixture.offset), Errors: []string{fmt.Sprint(i)}}
+		if err = s.Ingest(ctx, x, now, 300); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.db.Exec(`INSERT INTO samples(host,id,at,data) VALUES('n','metric-only',?,'{}')`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	states, err := s.States(ctx, "n", now, now.Add(time.Hour), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 2 || !states[0].At.Equal(now) || states[0].Errors[0] != "2" || !states[1].At.Equal(now.Add(time.Minute)) || states[1].Errors[0] != "0" {
+		t.Fatalf("wrong state history ordering or boundaries: %+v", states)
+	}
+	assertStateHistoryIndex(t, s)
+}
+
+func TestStateHistoryIndexUpgradesExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if s != nil {
+			s.Close()
+		}
+	})
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	x := protocol.Sample{HostID: "n", ID: "old", At: now, Errors: []string{"preserve"}, Metrics: []protocol.Metric{{Name: "cpu_percent", Value: 42, Weight: 1}}}
+	if err = s.Ingest(context.Background(), x, now, 300); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec(`INSERT INTO samples(host,id,at,data) VALUES('n','metric-only',?,'{}'); DROP INDEX IF EXISTS sample_state_history`, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var samplesBefore string
+	sampleQuery := `SELECT group_concat(host || ':' || id || ':' || at || ':' || hex(data), '|') FROM (SELECT * FROM samples ORDER BY host,id)`
+	if err = s.db.QueryRow(sampleQuery).Scan(&samplesBefore); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err = s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s, err = Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertStateHistoryIndex(t, s)
+		var samplesAfter string
+		if err = s.db.QueryRow(sampleQuery).Scan(&samplesAfter); err != nil {
+			t.Fatal(err)
+		}
+		if samplesAfter != samplesBefore {
+			t.Fatal("opening existing database changed retained samples")
+		}
+		var version int
+		if err = s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 3 {
+			t.Fatalf("schema version changed: %d, %v", version, err)
+		}
+		for _, summary := range []bool{false, true} {
+			points, err := s.History(context.Background(), "n", now, now.Add(time.Hour), summary, 300)
+			if err != nil || len(points) != 1 || points[0].Average != 42 || !points[0].At.Equal(now) {
+				t.Fatalf("retained metrics changed (summary=%t): %+v, %v", summary, points, err)
+			}
+			states, err := s.States(context.Background(), "n", now, now.Add(time.Hour), summary)
+			if err != nil || len(states) != 1 || len(states[0].Errors) != 1 || states[0].Errors[0] != "preserve" || !states[0].At.Equal(now) {
+				t.Fatalf("retained states changed (summary=%t): %+v, %v", summary, states, err)
+			}
+		}
 	}
 }
 
