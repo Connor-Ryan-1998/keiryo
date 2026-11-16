@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -252,7 +253,11 @@ func serveUI(t *testing.T, h *Hub, target string) string {
 
 func ingestCPU(t *testing.T, h *Hub, id string, cpu float64) {
 	t.Helper()
-	now := time.Now().Add(-time.Second)
+	ingestCPUAt(t, h, id, cpu, time.Now().Add(-time.Second))
+}
+
+func ingestCPUAt(t *testing.T, h *Hub, id string, cpu float64, now time.Time) {
+	t.Helper()
 	s := protocol.Sample{Version: 1, HostID: id, ID: "cpu-" + id, At: now, Metrics: []protocol.Metric{
 		{Name: "cpu_percent", Value: cpu, Weight: 1},
 		{Name: "memory_used_bytes", Value: 20, Weight: 1}, {Name: "memory_total_bytes", Value: 100, Weight: 1},
@@ -277,6 +282,25 @@ func TestOverviewTriageIgnoresFilter(t *testing.T) {
 	if strings.Contains(body, `<tr data-host="gateway"`) || !strings.Contains(body, `<tr data-host="erp"`) {
 		t.Fatal("filter did not narrow the readings table")
 	}
+	if !strings.Contains(body, "1 host needs attention") {
+		t.Fatal("filter hid the problem from the summary line")
+	}
+}
+
+func TestStaleHostIsNoDataNotCritical(t *testing.T) {
+	h := testHub(t, "proxy")
+	ingestCPUAt(t, h, "gateway", 95, time.Now().Add(-time.Hour))
+	body := serveUI(t, h, "/")
+	if !strings.Contains(body, `<a class="host-card unavailable" href="/hosts/gateway"`) {
+		t.Fatal("stale host card not shown as no data")
+	}
+	row := regexp.MustCompile(`(?s)<tr data-host="gateway".*?</tr>`).FindString(body)
+	if strings.Contains(row, "· Critical") || strings.Contains(row, `class="critical"`) {
+		t.Fatalf("stale reading presented as critical: %s", row)
+	}
+	if !strings.Contains(row, "95.0%") {
+		t.Fatalf("stale reading value hidden: %s", row)
+	}
 }
 
 func TestPrimaryReason(t *testing.T) {
@@ -293,12 +317,18 @@ func TestPrimaryReason(t *testing.T) {
 	exited.Sample.Containers = []protocol.Container{{ID: "db", Name: "database", State: "exited"}}
 	stale := withCPU(95)
 	stale.Sample.At = now.Add(-time.Hour)
+	noMemory := withCPU(95)
+	noMemory.Sample.Metrics = slices.DeleteFunc(slices.Clone(noMemory.Sample.Metrics), func(m protocol.Metric) bool { return m.Name == "memory_used_bytes" })
+	tie := withCPU(95)
+	tie.Sample.Containers = exited.Sample.Containers
 	for _, tc := range []struct {
 		name string
 		host store.Host
 		want string
 	}{
 		{"critical cpu", withCPU(95), "CPU at 95.0%"},
+		{"reason matches health over unavailable signal", noMemory, "CPU at 95.0%"},
+		{"resource wins severity tie", tie, "CPU at 95.0%"},
 		{"container outranks warning", exited, "database: exited; exit code unknown"},
 		{"stale", stale, "No recent readings"},
 		{"never seen", store.Host{ID: "x"}, "No readings received yet"},

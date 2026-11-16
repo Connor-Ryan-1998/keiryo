@@ -81,13 +81,17 @@ test("problemSince walks back to the first over-threshold sample", () => {
   assert.deepEqual(problemSince([{At:0,Value:95},{At:60,Value:70}], 90, 90, 0), {kind:"latest"});
   assert.deepEqual(problemSince([{At:0,Value:95},{At:500,Value:95}], 90, 90, 0), {kind:"since",at:500});
   assert.deepEqual(problemSince([], 90, 90, 0), {kind:"latest"});
+  // Series ending in a gap before the range end: never guess a start time.
+  assert.deepEqual(problemSince([{At:0,Value:50},{At:60,Value:95}], 90, 90, 0, 600), {kind:"latest"});
+  assert.deepEqual(problemSince([{At:0,Value:50},{At:60,Value:95}], 90, 90, 0, 120), {kind:"since",at:60});
 });
 
 test("byte rates scale units like the server", () => {
   assert.equal(formatValue(512, "B/s"), "512 B/s");
   assert.equal(formatValue(3072, "B/s"), "3.0 KiB/s");
   assert.equal(formatValue(1.5 * 2 ** 20, "B/s"), "1.5 MiB/s");
-  assert.equal(formatValue(25, "%"), "25 %");
+  assert.equal(formatValue(25, "%"), "25.0%");
+  assert.equal(formatValue(95.126, "%"), "95.1%");
 });
 
 test("relative times use coarse buckets", () => {
@@ -102,8 +106,17 @@ test("relative times use coarse buckets", () => {
 test("threshold labels and heatmap edges have room", () => {
   const line = chartOption({percent:true,start:0,end:10,gap:5,series:[{Name:"CPU",Samples:[{At:1,Value:80}]}]});
   assert.ok(line.grid.right >= 45);
+  // Threshold labels must be plain text; the default outline smears small digits.
+  const label = line.series[0].markLine.label;
+  assert.equal(label.textBorderWidth, 0);
+  assert.equal(label.formatter({value: 90}), "90%");
   const heat = chartOption({kind:"heatmap",start:0,end:3000,step:1000,series:[]});
   assert.ok(heat.grid.right >= 45);
+});
+
+test("treemap labels have line spacing for two lines", () => {
+  const tree = chartOption({kind:"treemap",series:[]});
+  assert.ok(tree.series[0].label.lineHeight >= tree.series[0].label.fontSize * 1.2);
 });
 
 test("byte-rate axes use scaled units", () => {

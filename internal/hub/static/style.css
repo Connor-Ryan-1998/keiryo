@@ -78,8 +78,8 @@ tbody th{font-weight:400}td{overflow-wrap:anywhere}
 .readings td,.readings th{white-space:nowrap}
 meter{width:90px;height:.65rem;vertical-align:middle;margin-right:var(--s2);appearance:none;border:none;border-radius:5px;background:var(--border)}
 meter::-webkit-meter-bar{background:var(--border);border:0;border-radius:5px}
-meter::-webkit-meter-optimum-value{background:var(--green)}meter.warning::-webkit-meter-optimum-value{background:var(--amber)}meter.critical::-webkit-meter-optimum-value{background:var(--red)}
-meter::-moz-meter-bar{background:var(--green)}meter.warning::-moz-meter-bar{background:var(--amber)}meter.critical::-moz-meter-bar{background:var(--red)}
+meter::-webkit-meter-optimum-value{background:var(--green)}meter.warning::-webkit-meter-optimum-value{background:var(--amber)}meter.critical::-webkit-meter-optimum-value{background:var(--red)}meter.unavailable::-webkit-meter-optimum-value{background:var(--muted)}
+meter::-moz-meter-bar{background:var(--green)}meter.warning::-moz-meter-bar{background:var(--amber)}meter.critical::-moz-meter-bar{background:var(--red)}meter.unavailable::-moz-meter-bar{background:var(--muted)}
 
 /* Stats */
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--s3);margin:var(--s4) 0}
@@ -128,7 +128,11 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px 
   .toolbar{padding:var(--s3);gap:var(--s2)}.toolbar select{min-width:6.5rem}.toolbar input{max-width:11rem}
   .updates{gap:var(--s2)}.updates p{flex-basis:100%;margin:0}
   .section-nav a{font-size:.8rem;padding:.4rem .7rem}
-  .readings tbody th{position:sticky;left:0;background:var(--panel);z-index:1}
+  /* Host + CPU stay visible; remaining columns scroll horizontally. */
+  .readings tr>:first-child,.readings tr>:nth-child(2){position:sticky;background:var(--panel);z-index:1}
+  .readings tr>:first-child{left:0;width:7.5rem;min-width:7.5rem;max-width:7.5rem;overflow-wrap:anywhere}
+  .readings tr>:nth-child(2){left:7.5rem}
+  .readings meter{width:48px}
   .rank-list strong{float:none;margin-left:var(--s4)}
 }
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}

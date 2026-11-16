@@ -52,7 +52,7 @@ function formatRate(value) {
   while (value >= 1024 && unit < 2) {value /= 1024;unit++;}
   return `${value.toFixed(1)} ${["KiB/s", "MiB/s", "GiB/s"][unit]}`;
 }
-const formatValue = (value, unit) => unit === "B/s" ? formatRate(value) : `${new Intl.NumberFormat(undefined, {maximumFractionDigits: 2, notation: Math.abs(value) >= 10000 ? "compact" : "standard"}).format(value)} ${unit}`;
+const formatValue = (value, unit) => unit === "B/s" ? formatRate(value) : unit === "%" ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat(undefined, {maximumFractionDigits: 2, notation: Math.abs(value) >= 10000 ? "compact" : "standard"}).format(value)} ${unit}`;
 
 function relativeTime(at, now) {
   const seconds = Math.round((now - at) / 1000);
@@ -64,9 +64,11 @@ function relativeTime(at, now) {
 }
 
 // Walk back from the newest sample while it stays over the threshold without gaps.
-// Never guesses: a latest sample under the threshold yields "latest", not a start time.
-function problemSince(samples, threshold, gap, start) {
-  if (!samples.length || samples[samples.length - 1].Value < threshold) return {kind: "latest"};
+// Never guesses: a latest sample under the threshold, or a series ending in a gap
+// before the range end, yields "latest", not a start time.
+function problemSince(samples, threshold, gap, start, end) {
+  const last = samples[samples.length - 1];
+  if (!last || last.Value < threshold || (end !== undefined && end - last.At > gap)) return {kind: "latest"};
   let i = samples.length - 1;
   while (i > 0 && samples[i - 1].Value >= threshold && samples[i].At - samples[i - 1].At <= gap) i--;
   if (i === 0 && samples[0].At - start <= gap) return {kind: "before"};
@@ -90,7 +92,7 @@ function chartOption({kind = "line", series, unit = "", percent = false, start, 
   if (kind === "treemap") {
     return {...base, xAxis: [], yAxis: [], dataZoom: [], tooltip: {...base.tooltip, trigger: "item"}, series: [{
       type: "treemap", roam: false, nodeClick: false, breadcrumb: {show: false},
-      label: {formatter: p => `${p.name}\n${formatValue(p.value / (1 << 30), "GiB")} · ${p.data.used.toFixed(1)}%`, color: "#111217", fontSize: 13, fontWeight: 600, overflow: "truncate"},
+      label: {formatter: p => `${p.name}\n${formatValue(p.value / (1 << 30), "GiB")} · ${p.data.used.toFixed(1)}%`, color: "#111217", fontSize: 13, lineHeight: 18, fontWeight: 600, overflow: "truncate"},
       itemStyle: {borderColor: "#181b1f", borderWidth: 3, gapWidth: 3},
       data: series.map(p => ({name: p.Name, value: p.Value, used: p.Used, itemStyle: {color: usageColor(p.Used, thresholds)}})),
     }]};
@@ -121,7 +123,7 @@ function chartOption({kind = "line", series, unit = "", percent = false, start, 
       data.push(...segment.map(p => [p.At, p.Value]));
     }
     return {name: s.Name, type: "line", data, connectNulls: false, showSymbol: true, symbolSize: spark ? value => singletons.has(value[0]) ? 4 : 0 : 3, lineStyle: {width: 2},
-      ...(percent && !spark && index === 0 ? {markLine: {silent: true, symbol: "none", label: {formatter: p => `${p.value}%`}, data: [{yAxis: thresholds.warning, lineStyle: {color: "#ff9830", type: "dashed"}}, {yAxis: thresholds.critical, lineStyle: {color: "#f2495c", type: "dashed"}}]}} : {}),
+      ...(percent && !spark && index === 0 ? {markLine: {silent: true, symbol: "none", label: {formatter: p => `${p.value}%`, color: "#b8b8ba", textBorderWidth: 0}, data: [{yAxis: thresholds.warning, lineStyle: {color: "#ff9830", type: "dashed"}}, {yAxis: thresholds.critical, lineStyle: {color: "#f2495c", type: "dashed"}}]}} : {}),
     };
   });
   return {...base, ...(spark ? {grid: {left: 2, right: 2, top: 5, bottom: 5}, xAxis: {...base.xAxis, show: false}, yAxis: {...base.yAxis, show: false}, tooltip: {show: false}, dataZoom: []} : {}), series: lines};
@@ -221,7 +223,7 @@ function renderSince(panel, root) {
   const threshold = JSON.parse(root.dataset.thresholds)[panel.dataset.resource]?.[state];
   const series = JSON.parse(panel.dataset.series).find(s => s.Name === panel.dataset.entity);
   const samples = series?.Samples || [];
-  const result = threshold === undefined ? {kind: "latest"} : problemSince(samples, threshold, Number(root.dataset.gap), Number(root.dataset.start));
+  const result = threshold === undefined ? {kind: "latest"} : problemSince(samples, threshold, Number(root.dataset.gap), Number(root.dataset.start), Number(root.dataset.end));
   target.replaceChildren();
   if (result.kind === "since") target.textContent = `${label} since ${shortTime(result.at)}`;
   else if (result.kind === "latest") target.textContent = samples.length ? `${label} at last reading ${shortTime(samples[samples.length - 1].At)}` : `${label} at last reading`;

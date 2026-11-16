@@ -24,12 +24,14 @@ type fleetHost struct {
 	store.Host
 	Status, Health             string
 	CPU, Memory, Disk, Network *float64
-	MemoryTotal                float64
-	Fresh                      bool
-	Uptime                     string
-	Reason                     string
-	Conditions                 []condition
-	Signals                    []condition
+	// Per-resource readings for the table; state is "unavailable" when the row is not fresh.
+	CPUView, MemoryView, DiskView metricView
+	MemoryTotal                   float64
+	Fresh                         bool
+	Uptime                        string
+	Reason                        string
+	Conditions                    []condition
+	Signals                       []condition
 }
 type fleetChart struct{ Title, Kind, Unit, Data, Resource string }
 
@@ -128,6 +130,10 @@ func (row fleetHost) primaryReason() string {
 	var best *condition
 	for i := range row.Conditions {
 		c := &row.Conditions[i]
+		// Explain the pill: a warning/critical host's reason must have that state.
+		if (row.Health == "warning" || row.Health == "critical") && c.State != row.Health {
+			continue
+		}
 		if best == nil || severity(c.State) > severity(best.State) || (severity(c.State) == severity(best.State) && reasonRank(c.Kind) < reasonRank(best.Kind)) {
 			best = c
 		}
@@ -304,6 +310,12 @@ func (h *Hub) fleetRow(host store.Host) fleetHost {
 		row.Health = "unavailable"
 	}
 	row.Reason = row.primaryReason()
+	row.CPUView, row.MemoryView, row.DiskView = h.metricReading("cpu", row.CPU), h.metricReading("memory", row.Memory), h.metricReading("disk", row.Disk)
+	if !row.Fresh {
+		for _, v := range []*metricView{&row.CPUView, &row.MemoryView, &row.DiskView} {
+			v.State = "unavailable"
+		}
+	}
 	return row
 }
 
