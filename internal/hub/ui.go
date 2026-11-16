@@ -79,9 +79,11 @@ func (h *Hub) host(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nodes unavailable", 503)
 		return
 	}
+	charts := chartViews(points, host)
+	h.markProblems(charts, host)
 	h.render(w, "host", map[string]any{
-		"Host":  hostView{Host: host, Status: h.status(host.Seen), Stats: overview(h.currentReadings(host)), CanFetchLogs: h.canFetchLogs(host), LiveContainers: h.currentReadings(host).Sample.Containers},
-		"Nodes": nodes, "Range": window, "Charts": chartViews(points, host),
+		"Host":  hostView{Host: host, Status: h.status(host.Seen), Stats: h.hostStats(host), CanFetchLogs: h.canFetchLogs(host), LiveContainers: h.currentReadings(host).Sample.Containers},
+		"Nodes": nodes, "Range": window, "Charts": charts,
 		"Start": end.Add(-time.Duration(hours) * time.Hour).UnixMilli(), "End": end.UnixMilli(),
 		"Gap":    chartGap(points, summary, h.config.BucketSeconds, h.config.StaleSeconds),
 		"Points": points, "States": states, "Summary": summary,

@@ -44,7 +44,34 @@ function nearestSample(samples, at, gap) {
 
 const chartColors = ["#5794f2", "#73bf69", "#fade2a", "#ff9830", "#b877d9", "#f2495c"];
 const usageColor = (value, thresholds) => value >= thresholds.critical ? "#f2495c" : value >= thresholds.warning ? "#ff9830" : "#73bf69";
-const formatValue = (value, unit) => `${new Intl.NumberFormat(undefined, {maximumFractionDigits: 2, notation: Math.abs(value) >= 10000 ? "compact" : "standard"}).format(value)} ${unit}`;
+// Byte rates mirror the server's rate(): whole bytes below 1 KiB, then one decimal.
+function formatRate(value) {
+  if (value < 1024) return `${Math.round(value)} B/s`;
+  let unit = 0;
+  value /= 1024;
+  while (value >= 1024 && unit < 2) {value /= 1024;unit++;}
+  return `${value.toFixed(1)} ${["KiB/s", "MiB/s", "GiB/s"][unit]}`;
+}
+const formatValue = (value, unit) => unit === "B/s" ? formatRate(value) : `${new Intl.NumberFormat(undefined, {maximumFractionDigits: 2, notation: Math.abs(value) >= 10000 ? "compact" : "standard"}).format(value)} ${unit}`;
+
+function relativeTime(at, now) {
+  const seconds = Math.round((now - at) / 1000);
+  if (seconds < 0) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+// Walk back from the newest sample while it stays over the threshold without gaps.
+// Never guesses: a latest sample under the threshold yields "latest", not a start time.
+function problemSince(samples, threshold, gap, start) {
+  if (!samples.length || samples[samples.length - 1].Value < threshold) return {kind: "latest"};
+  let i = samples.length - 1;
+  while (i > 0 && samples[i - 1].Value >= threshold && samples[i].At - samples[i - 1].At <= gap) i--;
+  if (i === 0 && samples[0].At - start <= gap) return {kind: "before"};
+  return {kind: "since", at: samples[i].At};
+}
 
 function chartOption({kind = "line", series, unit = "", percent = false, start, end, gap, step, thresholds = {warning:80,critical:90}}) {
   const base = {
@@ -53,16 +80,17 @@ function chartOption({kind = "line", series, unit = "", percent = false, start, 
     aria: {enabled: true},
     // Rich-text tooltips paint to canvas, never interpolate metric names as HTML.
     tooltip: {trigger: "axis", renderMode: "richText", backgroundColor: "#111217", borderColor: "#2c3235", textStyle: {color: "#ccccdc"}},
-    grid: {left: 65, right: 25, top: 35, bottom: 65, containLabel: true},
+    // Right padding keeps threshold markLine labels inside the canvas.
+    grid: {left: 65, right: 48, top: 35, bottom: 65, containLabel: true},
     xAxis: {type: "time", min: start, max: end, axisLabel: {color: "#b8b8ba", hideOverlap: true}, axisLine: {lineStyle: {color: "#2c3235"}}},
-    yAxis: {type: "value", min: 0, ...(percent ? {max: 100} : {}), name: unit, axisLabel: {color: "#b8b8ba"}, splitLine: {lineStyle: {color: "#2c3235"}}},
+    yAxis: {type: "value", min: 0, ...(percent ? {max: 100} : {}), name: unit === "B/s" ? "" : unit, axisLabel: {color: "#b8b8ba", ...(unit === "B/s" ? {formatter: formatRate} : {})}, splitLine: {lineStyle: {color: "#2c3235"}}},
     legend: {show: false},
     dataZoom: [{type: "inside", filterMode: "none"}, {type: "slider", bottom: 5, height: 18, borderColor: "#2c3235", backgroundColor: "#111217", fillerColor: "rgba(87,148,242,0.15)", handleStyle: {color: "#b8b8ba", borderColor: "#2c3235"}, moveHandleStyle: {color: "#b8b8ba"}, dataBackground: {lineStyle: {color: "#8e8e90"}, areaStyle: {color: "#2c3235"}}, selectedDataBackground: {lineStyle: {color: "#5794f2"}, areaStyle: {color: "#5794f2"}}, textStyle: {color: "#b8b8ba"}}],
   };
   if (kind === "treemap") {
     return {...base, xAxis: [], yAxis: [], dataZoom: [], tooltip: {...base.tooltip, trigger: "item"}, series: [{
       type: "treemap", roam: false, nodeClick: false, breadcrumb: {show: false},
-      label: {formatter: p => `${p.name}\n${formatValue(p.value / (1 << 30), "GiB")} · ${p.data.used.toFixed(1)}%`, color: "#111217", overflow: "truncate"},
+      label: {formatter: p => `${p.name}\n${formatValue(p.value / (1 << 30), "GiB")} · ${p.data.used.toFixed(1)}%`, color: "#111217", fontSize: 13, fontWeight: 600, overflow: "truncate"},
       itemStyle: {borderColor: "#181b1f", borderWidth: 3, gapWidth: 3},
       data: series.map(p => ({name: p.Name, value: p.Value, used: p.Used, itemStyle: {color: usageColor(p.Used, thresholds)}})),
     }]};
@@ -71,7 +99,7 @@ function chartOption({kind = "line", series, unit = "", percent = false, start, 
     const hosts = [...new Set(series.map(p => p.Host))];
     const times = [];
     for (let at = Math.floor(start / step) * step; at < end; at += step) times.push(at);
-    return {...base, dataZoom: [], grid: {...base.grid, left: 20, bottom: 70},
+    return {...base, dataZoom: [], grid: {...base.grid, left: 20, right: 60, bottom: 70},
       tooltip: {...base.tooltip, trigger: "item", formatter: p => `${hosts[p.value[1]]}\n${new Date(times[p.value[0]]).toLocaleString()}\nPeak ${p.value[2].toFixed(1)}% · average ${p.value[3].toFixed(1)}%`},
       xAxis: {type: "category", data: times.map(t => new Date(t).toLocaleString(undefined, {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})), axisLabel: {hideOverlap: true, color: "#b8b8ba"}},
       yAxis: {type: "category", data: hosts, axisLabel: {width: 140, overflow: "truncate", color: "#b8b8ba"}},
@@ -170,10 +198,49 @@ function renderHistory(root) {
   target.replaceChildren(table);
 }
 
+function applyTimes(root, now = Date.now()) {
+  root.querySelectorAll("time[data-format]").forEach(el => {
+    const at = Date.parse(el.getAttribute("datetime"));
+    if (Number.isNaN(at)) return;
+    el.textContent = el.dataset.format === "relative" ? relativeTime(at, now) : new Date(at).toLocaleString();
+  });
+}
+
+const nextRange = {"1h": "24h", "24h": "7d", "7d": "30d"};
+function shortTime(at) {
+  const date = new Date(at);
+  const today = date.toDateString() === new Date().toDateString();
+  return date.toLocaleString(undefined, today ? {hour: "2-digit", minute: "2-digit"} : {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+}
+
+function renderSince(panel, root) {
+  const target = panel.querySelector(".since");
+  if (!target || !panel.dataset.state) return;
+  const state = panel.dataset.state;
+  const label = state[0].toUpperCase() + state.slice(1);
+  const threshold = JSON.parse(root.dataset.thresholds)[panel.dataset.resource]?.[state];
+  const series = JSON.parse(panel.dataset.series).find(s => s.Name === panel.dataset.entity);
+  const samples = series?.Samples || [];
+  const result = threshold === undefined ? {kind: "latest"} : problemSince(samples, threshold, Number(root.dataset.gap), Number(root.dataset.start));
+  target.replaceChildren();
+  if (result.kind === "since") target.textContent = `${label} since ${shortTime(result.at)}`;
+  else if (result.kind === "latest") target.textContent = samples.length ? `${label} at last reading ${shortTime(samples[samples.length - 1].At)}` : `${label} at last reading`;
+  else {
+    target.textContent = "Started before this range";
+    const range = nextRange[root.dataset.range];
+    if (range) {
+      const link = document.createElement("a");
+      link.href = `?range=${range}`;
+      link.textContent = `show ${range}`;
+      target.append(" · ", link);
+    }
+  }
+}
+
 function initDashboard() {
   let section = document.getElementById("dashboard-data");
   if (!section) return;
-  const render = root => {root.querySelectorAll(".chart-panel").forEach(panel => renderChart(panel, root));renderHistory(root);};
+  const render = root => {root.querySelectorAll(".chart-panel").forEach(panel => {renderChart(panel, root);renderSince(panel, root);});renderHistory(root);applyTimes(root);};
   render(section);
   document.getElementById("node-select")?.addEventListener("change", event => {location.href = `/hosts/${encodeURIComponent(event.target.value)}${location.search}`;});
   const status = document.getElementById("refresh-status");
@@ -195,7 +262,11 @@ function initDashboard() {
       next.querySelectorAll(".chart-panel").forEach(panel => {
         const old = oldPanels.get(panelKey(panel));
         if (!old) return;
+        // Mirror the fresh attributes exactly (incl. removals) so recovered problems lose their marking.
+        for (const key of Object.keys(old.dataset)) if (!(key in panel.dataset)) delete old.dataset[key];
         for (const [key, value] of Object.entries(panel.dataset)) old.dataset[key] = value;
+        const caption = panel.querySelector("figcaption");
+        if (caption) old.querySelector("figcaption")?.replaceWith(caption);
         panel.replaceWith(old);oldPanels.delete(panelKey(old));
       });
       oldPanels.forEach(panel => {if (typeof echarts !== "undefined") echarts.getInstanceByDom(panel.querySelector(".plot"))?.dispose();});
@@ -233,4 +304,4 @@ function initDashboard() {
 }
 
 if (typeof document !== "undefined") initDashboard();
-if (typeof module !== "undefined") module.exports = {chartSegments, nearestSample, chartOption};
+if (typeof module !== "undefined") module.exports = {chartSegments, nearestSample, chartOption, formatValue, problemSince, relativeTime};

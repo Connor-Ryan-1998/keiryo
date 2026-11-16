@@ -23,9 +23,11 @@ type chartSeries struct {
 type chartView struct {
 	Title, Unit, Note, Data, Resource string
 	Percent                           bool
+	// State and Entity mark the series behind a current warning/critical condition.
+	State, Entity string
 }
 
-type statView struct{ Label, Value string }
+type statView struct{ Label, Value, State string }
 
 // chartViews pairs related metrics only at the same timestamp and entity.
 // Summary percentages are ratios of bucket averages, not averages of ratios.
@@ -104,22 +106,23 @@ func chartViews(points []store.Point, host store.Host) []chartView {
 	return charts
 }
 
-func overview(host store.Host) []statView {
-	values := metrics(host)
-	cpu := "Unavailable"
-	if v, ok := values["cpu_percent\x00"]; ok {
-		cpu = fmt.Sprintf("%.1f%%", v)
-	}
-	memory, disk := "Unavailable", "Unavailable"
-	if total := values["memory_total_bytes\x00"]; total > 0 {
-		if used, ok := values["memory_used_bytes\x00"]; ok {
-			memory = fmt.Sprintf("%.1f%%", 100*used/total)
+// hostStats summarises the latest readings; states are only shown for fresh readings.
+func (h *Hub) hostStats(host store.Host) []statView {
+	row := h.fleetRow(host)
+	host = row.Host
+	stat := func(label, resource string, v *float64) statView {
+		if v == nil {
+			return statView{label, "Unavailable", ""}
 		}
-	}
-	if total := values["filesystem_total_bytes\x00/"]; total > 0 {
-		if free, ok := values["filesystem_free_bytes\x00/"]; ok && free <= total {
-			disk = fmt.Sprintf("%.1f%%", 100*(1-free/total))
+		out := statView{label, fmt.Sprintf("%.1f%%", *v), ""}
+		if row.Fresh {
+			out.State = h.metricReading(resource, v).State
 		}
+		return out
+	}
+	diskLabel := "Disk"
+	if mount := h.worstMount(host); mount != "" {
+		diskLabel += " " + mount
 	}
 	running, other := 0, 0
 	for _, c := range host.Sample.Containers {
@@ -131,7 +134,10 @@ func overview(host store.Host) []statView {
 	}
 	containers := "Unavailable"
 	if (!host.Sample.Incremental && !host.Sample.At.IsZero()) || !host.Sample.StateAt.IsZero() {
-		containers = fmt.Sprintf("%d running / %d other", running, other)
+		containers = fmt.Sprintf("%d running", running)
+		if other > 0 {
+			containers += fmt.Sprintf(" · %d other", other)
+		}
 		for _, err := range host.Sample.Errors {
 			if strings.HasPrefix(err, "docker") {
 				containers += " · collection incomplete"
@@ -139,7 +145,38 @@ func overview(host store.Host) []statView {
 			}
 		}
 	}
-	return []statView{{"CPU", cpu}, {"Memory", memory}, {"Root disk", disk}, {"Containers", containers}}
+	return []statView{stat("CPU", "cpu", row.CPU), stat("Memory", "memory", row.Memory), stat(diskLabel, "disk", row.Disk), {"Containers", containers, ""}}
+}
+
+// worstMount is the fullest monitored mount, the same one that drives disk health.
+func (h *Hub) worstMount(host store.Host) string {
+	mount, worst := "", -1.0
+	for _, v := range h.volumes(host) {
+		if v.Percent > worst {
+			mount, worst = v.Mount, v.Percent
+		}
+	}
+	return mount
+}
+
+// markProblems flags charts behind current resource conditions and moves them first.
+func (h *Hub) markProblems(charts []chartView, host store.Host) {
+	row := h.fleetRow(host)
+	if !row.Fresh {
+		return
+	}
+	readings := map[string]*float64{"cpu": row.CPU, "memory": row.Memory, "disk": row.Disk}
+	entities := map[string]string{"cpu": "CPU", "memory": "Memory", "disk": h.worstMount(row.Host)}
+	for i := range charts {
+		v, ok := readings[charts[i].Resource]
+		if !ok || v == nil {
+			continue
+		}
+		if state := h.metricReading(charts[i].Resource, v).State; state == "warning" || state == "critical" {
+			charts[i].State, charts[i].Entity = state, entities[charts[i].Resource]
+		}
+	}
+	sort.SliceStable(charts, func(i, j int) bool { return severity(charts[i].State) > severity(charts[j].State) })
 }
 
 func chartGap(points []store.Point, summary bool, bucket, stale int) int64 {

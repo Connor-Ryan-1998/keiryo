@@ -1,6 +1,6 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
-const {chartSegments, nearestSample, chartOption} = require("../../internal/hub/static/dashboard.js");
+const {chartSegments, nearestSample, chartOption, formatValue, problemSince, relativeTime} = require("../../internal/hub/static/dashboard.js");
 
 test("injected thresholds control chart markers and capacity colours", () => {
   const thresholds = {warning:60,critical:75};
@@ -73,4 +73,40 @@ test("pixel reduction preserves endpoints and peaks without joining outages", ()
   assert.ok(reduced.some(p => p.Value === 100));
   assert.ok(reduced.some(p => p.Value === 0));
   assert.equal(chartSegments([...samples, {At: 20000, Value: 25}], 0, 21000, 2).length, 2);
+});
+
+test("problemSince walks back to the first over-threshold sample", () => {
+  assert.deepEqual(problemSince([{At:0,Value:50},{At:60,Value:92},{At:120,Value:95}], 90, 90, 0), {kind:"since",at:60});
+  assert.deepEqual(problemSince([{At:0,Value:95},{At:60,Value:96}], 90, 90, 0), {kind:"before"});
+  assert.deepEqual(problemSince([{At:0,Value:95},{At:60,Value:70}], 90, 90, 0), {kind:"latest"});
+  assert.deepEqual(problemSince([{At:0,Value:95},{At:500,Value:95}], 90, 90, 0), {kind:"since",at:500});
+  assert.deepEqual(problemSince([], 90, 90, 0), {kind:"latest"});
+});
+
+test("byte rates scale units like the server", () => {
+  assert.equal(formatValue(512, "B/s"), "512 B/s");
+  assert.equal(formatValue(3072, "B/s"), "3.0 KiB/s");
+  assert.equal(formatValue(1.5 * 2 ** 20, "B/s"), "1.5 MiB/s");
+  assert.equal(formatValue(25, "%"), "25 %");
+});
+
+test("relative times use coarse buckets", () => {
+  const now = 10 ** 10;
+  assert.equal(relativeTime(now - 18000, now), "18s ago");
+  assert.equal(relativeTime(now - 300000, now), "5m ago");
+  assert.equal(relativeTime(now - 3 * 3600000, now), "3h ago");
+  assert.equal(relativeTime(now - 2 * 86400000, now), "2d ago");
+  assert.equal(relativeTime(now + 5000, now), "just now");
+});
+
+test("threshold labels and heatmap edges have room", () => {
+  const line = chartOption({percent:true,start:0,end:10,gap:5,series:[{Name:"CPU",Samples:[{At:1,Value:80}]}]});
+  assert.ok(line.grid.right >= 45);
+  const heat = chartOption({kind:"heatmap",start:0,end:3000,step:1000,series:[]});
+  assert.ok(heat.grid.right >= 45);
+});
+
+test("byte-rate axes use scaled units", () => {
+  const option = chartOption({unit:"B/s",start:0,end:10,gap:5,series:[{Name:"eth0 receive",Samples:[{At:1,Value:2048}]}]});
+  assert.equal(option.yAxis.axisLabel.formatter(2048), "2.0 KiB/s");
 });

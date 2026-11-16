@@ -165,7 +165,7 @@ func TestFleetViewsFiltersRangesAndEscaping(t *testing.T) {
 			r.Header.Set("X-authentik-username", "test")
 			w := httptest.NewRecorder()
 			h.UIHandler().ServeHTTP(w, r)
-			for _, want := range []string{"Fleet Overview", "Resource Views", "Fleet Metrics", "Alerts &amp; Hosts"} {
+			for _, want := range []string{"Fleet Overview", "Resource Views", "Fleet Metrics", "Containers &amp; backups"} {
 				if w.Code != 200 || !strings.Contains(w.Body.String(), want) {
 					t.Fatalf("%s missing %s: %d %s", window, want, w.Code, w.Body.String())
 				}
@@ -213,7 +213,7 @@ func TestFleetNavigationPreservesSelection(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
-	links := regexp.MustCompile(`<a href="([^"]*)"([^>]*)>(Fleet Overview|Resource Views|Fleet Metrics|Alerts &amp; Hosts|Previous)</a>`).FindAllStringSubmatch(w.Body.String(), -1)
+	links := regexp.MustCompile(`<a href="([^"]*)"([^>]*)>(Fleet Overview|Resource Views|Fleet Metrics|Containers &amp; backups|Previous)</a>`).FindAllStringSubmatch(w.Body.String(), -1)
 	if len(links) != 5 {
 		t.Fatalf("expected four views and previous page, got %d", len(links))
 	}
@@ -234,5 +234,127 @@ func TestFleetNavigationPreservesSelection(t *testing.T) {
 		if strings.Contains(link[2], `aria-current="page"`) != (i == 2) {
 			t.Fatalf("incorrect active view: %s", link[0])
 		}
+	}
+}
+
+func serveUI(t *testing.T, h *Hub, target string) string {
+	t.Helper()
+	r := httptest.NewRequest("GET", target, nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-authentik-username", "test")
+	w := httptest.NewRecorder()
+	h.UIHandler().ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("%s: %d %s", target, w.Code, w.Body.String())
+	}
+	return w.Body.String()
+}
+
+func ingestCPU(t *testing.T, h *Hub, id string, cpu float64) {
+	t.Helper()
+	now := time.Now().Add(-time.Second)
+	s := protocol.Sample{Version: 1, HostID: id, ID: "cpu-" + id, At: now, Metrics: []protocol.Metric{
+		{Name: "cpu_percent", Value: cpu, Weight: 1},
+		{Name: "memory_used_bytes", Value: 20, Weight: 1}, {Name: "memory_total_bytes", Value: 100, Weight: 1},
+		{Name: "filesystem_total_bytes", Entity: "/", Value: 100, Weight: 1}, {Name: "filesystem_free_bytes", Entity: "/", Value: 80, Weight: 1},
+	}}
+	if err := h.store.Ingest(context.Background(), s, now, 300); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOverviewTriageIgnoresFilter(t *testing.T) {
+	h := testHub(t, "proxy")
+	ingestCPU(t, h, "gateway", 95)
+	ingestCPU(t, h, "erp", 20)
+	body := serveUI(t, h, "/?q=erp")
+	if !regexp.MustCompile(`<a class="host-card critical" href="/hosts/gateway"`).MatchString(body) {
+		t.Fatal("filter hid the critical host card")
+	}
+	if !strings.Contains(body, `id="attention-title"`) || !strings.Contains(body, "95.0% used · critical at 90%") {
+		t.Fatal("filter hid the critical condition")
+	}
+	if strings.Contains(body, `<tr data-host="gateway"`) || !strings.Contains(body, `<tr data-host="erp"`) {
+		t.Fatal("filter did not narrow the readings table")
+	}
+}
+
+func TestPrimaryReason(t *testing.T) {
+	h := testHub(t, "proxy")
+	h.config.AlertPolicy.Containers.Stopped = "critical"
+	now := time.Now()
+	withCPU := func(cpu float64) store.Host {
+		return store.Host{ID: "node", Seen: now, Sample: protocol.Sample{At: now, Metrics: []protocol.Metric{
+			{Name: "cpu_percent", Value: cpu}, {Name: "memory_used_bytes", Value: 20}, {Name: "memory_total_bytes", Value: 100},
+			{Name: "filesystem_total_bytes", Entity: "/", Value: 100}, {Name: "filesystem_free_bytes", Entity: "/", Value: 80},
+		}}}
+	}
+	exited := withCPU(85)
+	exited.Sample.Containers = []protocol.Container{{ID: "db", Name: "database", State: "exited"}}
+	stale := withCPU(95)
+	stale.Sample.At = now.Add(-time.Hour)
+	for _, tc := range []struct {
+		name string
+		host store.Host
+		want string
+	}{
+		{"critical cpu", withCPU(95), "CPU at 95.0%"},
+		{"container outranks warning", exited, "database: exited; exit code unknown"},
+		{"stale", stale, "No recent readings"},
+		{"never seen", store.Host{ID: "x"}, "No readings received yet"},
+		{"healthy", withCPU(20), ""},
+	} {
+		if got := h.fleetRow(tc.host).Reason; got != tc.want {
+			t.Errorf("%s: reason %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRateUnits(t *testing.T) {
+	for in, want := range map[float64]string{512: "512 B/s", 3072: "3.0 KiB/s", 1.5 * (1 << 20): "1.5 MiB/s", 2 * (1 << 30): "2.0 GiB/s"} {
+		if got := rate(in); got != want {
+			t.Errorf("rate(%v)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestResourceDetailIncludesThreshold(t *testing.T) {
+	h := testHub(t, "proxy")
+	now := time.Now()
+	host := store.Host{ID: "node", Seen: now, Sample: protocol.Sample{At: now, Metrics: []protocol.Metric{{Name: "cpu_percent", Value: 95}}}}
+	for _, c := range h.fleetRow(host).Conditions {
+		if c.Kind == "CPU" {
+			if c.Detail != "95.0% used · critical at 90%" {
+				t.Fatalf("detail %q", c.Detail)
+			}
+			return
+		}
+	}
+	t.Fatal("cpu condition missing")
+}
+
+func TestNeedsAttentionHiddenWhenHealthy(t *testing.T) {
+	h := testHub(t, "proxy")
+	ingestCPU(t, h, "node", 20)
+	body := serveUI(t, h, "/")
+	if strings.Contains(body, `id="attention-title"`) || !strings.Contains(body, "All 1 host is reporting within thresholds") {
+		t.Fatal("healthy fleet not presented as all clear")
+	}
+	h.setError("Alert delivery failed; check Discord configuration, connectivity and database health.")
+	body = serveUI(t, h, "/")
+	if strings.Contains(body, "within thresholds") || !strings.Contains(body, `role="alert">Alert delivery failed`) {
+		t.Fatal("degraded hub presented as all clear")
+	}
+}
+
+func TestZeroTimesRenderNever(t *testing.T) {
+	h := testHub(t, "proxy")
+	body := serveUI(t, h, "/")
+	row := regexp.MustCompile(`(?s)<tr data-host="node".*?</tr>`).FindString(body)
+	if !strings.Contains(row, "Never") || strings.Contains(body, `datetime=""`) {
+		t.Fatalf("never-seen host row: %s", row)
+	}
+	if strings.Contains(body, "within thresholds") {
+		t.Fatal("never-seen host presented as all clear")
 	}
 }

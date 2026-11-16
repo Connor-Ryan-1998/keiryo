@@ -3,6 +3,7 @@ package hub
 import (
 	"encoding/json"
 	"fmt"
+	"houselab/monitoring/internal/config"
 	"houselab/monitoring/internal/store"
 	"net/http"
 	"slices"
@@ -26,6 +27,7 @@ type fleetHost struct {
 	MemoryTotal                float64
 	Fresh                      bool
 	Uptime                     string
+	Reason                     string
 	Conditions                 []condition
 	Signals                    []condition
 }
@@ -38,6 +40,112 @@ func reading(v *float64) string {
 	return fmt.Sprintf("%.1f", *v)
 }
 func byteSize(v float64) string { return fmt.Sprintf("%.1f GiB", v/(1<<30)) }
+
+// rate formats a byte rate with binary units; whole bytes below 1 KiB.
+func rate(v float64) string {
+	if v < 1024 {
+		return fmt.Sprintf("%.0f B/s", v)
+	}
+	unit := "KiB/s"
+	v /= 1024
+	for _, next := range []string{"MiB/s", "GiB/s"} {
+		if v < 1024 {
+			break
+		}
+		v /= 1024
+		unit = next
+	}
+	return fmt.Sprintf("%.1f %s", v, unit)
+}
+
+// fleetSummary is the one-line answer to "is anything wrong?"; it never claims all clear
+// while the hub is degraded or any host lacks fresh data.
+func fleetSummary(counts map[string]int, total int, more bool, degraded string) string {
+	plural := func(n int, one, many string) string {
+		if n == 1 {
+			return fmt.Sprintf("%d %s", n, one)
+		}
+		return fmt.Sprintf("%d %s", n, many)
+	}
+	var out string
+	problems, missing := counts["warning"]+counts["critical"], counts["unavailable"]
+	switch {
+	case total == 0:
+		out = "No hosts have reported yet"
+	case problems == 0 && missing == 0 && degraded == "":
+		out = "All " + plural(total, "host is", "hosts are") + " reporting within thresholds"
+	case problems == 0 && missing == 0:
+		out = "The hub reports a problem, so host readings may be incomplete"
+	default:
+		parts := []string{}
+		if problems > 0 {
+			parts = append(parts, plural(problems, "host needs", "hosts need")+" attention")
+		}
+		if missing > 0 {
+			parts = append(parts, plural(missing, "host", "hosts")+" with no current data")
+		}
+		out = strings.Join(parts, " · ")
+	}
+	if more {
+		out += " · first 100 hosts"
+	}
+	return out
+}
+
+func iso(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// reasonRank orders equally severe conditions: resources, contact, containers, collection, backups.
+func reasonRank(kind string) int {
+	switch kind {
+	case "CPU":
+		return 0
+	case "Memory":
+		return 1
+	case "Disk":
+		return 2
+	case "Contact / measurements":
+		return 3
+	case "Container":
+		return 4
+	case "Collection":
+		return 5
+	}
+	return 6
+}
+
+func (row fleetHost) primaryReason() string {
+	if !row.Fresh {
+		if row.Seen.IsZero() || row.Sample.At.IsZero() {
+			return "No readings received yet"
+		}
+		return "No recent readings"
+	}
+	var best *condition
+	for i := range row.Conditions {
+		c := &row.Conditions[i]
+		if best == nil || severity(c.State) > severity(best.State) || (severity(c.State) == severity(best.State) && reasonRank(c.Kind) < reasonRank(best.Kind)) {
+			best = c
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	switch best.Kind {
+	case "CPU", "Memory", "Disk":
+		if best.State == "unavailable" {
+			return best.Kind + ": no valid reading"
+		}
+		return best.Kind + " at " + strings.SplitN(best.Detail, " used", 2)[0]
+	case "Container":
+		return best.Detail
+	}
+	return best.Kind + ": " + best.Detail
+}
 func percent(used, total float64) *float64 {
 	if total <= 0 || used < 0 || used > total {
 		return nil
@@ -170,7 +278,12 @@ func (h *Hub) fleetRow(host store.Host) fleetHost {
 				missing = true
 				add(reading.resource, reading.name, "unavailable", "No valid reading")
 			} else {
-				add(reading.resource, reading.name, h.metricReading(reading.resource, reading.v).State, fmt.Sprintf("%.1f%% used", *reading.v))
+				state := h.metricReading(reading.resource, reading.v).State
+				detail := fmt.Sprintf("%.1f%% used", *reading.v)
+				if limit, ok := h.threshold(reading.resource, state); ok {
+					detail += fmt.Sprintf(" · %s at %g%%", state, limit)
+				}
+				add(reading.resource, reading.name, state, detail)
 			}
 		}
 	}
@@ -190,7 +303,21 @@ func (h *Hub) fleetRow(host store.Host) fleetHost {
 	if !row.Fresh || (missing && row.Health == "healthy") {
 		row.Health = "unavailable"
 	}
+	row.Reason = row.primaryReason()
 	return row
+}
+
+// threshold returns the configured limit for a warning/critical resource state.
+func (h *Hub) threshold(resource, state string) (float64, bool) {
+	p := h.config.AlertPolicy.Resources
+	t := map[string]config.Thresholds{"cpu": p.CPU, "memory": p.Memory, "disk": p.Disk}[resource]
+	switch state {
+	case "warning":
+		return t.Warning, true
+	case "critical":
+		return t.Critical, true
+	}
+	return 0, false
 }
 
 func historyHours(window string) (int, bool) {
@@ -214,7 +341,7 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 	}
 	views := []struct{ ID, Title string }{
 		{"overview", "Fleet Overview"}, {"resources", "Resource Views"},
-		{"metrics", "Fleet Metrics"}, {"conditions", "Alerts & Hosts"},
+		{"metrics", "Fleet Metrics"}, {"conditions", "Containers & backups"},
 	}
 	title := ""
 	for _, v := range views {
@@ -281,14 +408,17 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 		Value, Used float64
 	}
 	memory := []memoryCell{}
+	// Triage (cards, counts, attention) covers every host on the page; the filter never hides a problem.
+	cards := []fleetHost{}
 	for _, host := range hosts {
+		row := h.fleetRow(host)
+		cards = append(cards, row)
+		counts[row.Health]++
+		conditions = append(conditions, row.Conditions...)
 		if query != "" && !strings.Contains(strings.ToLower(host.ID+" "+host.Name), strings.ToLower(query)) {
 			continue
 		}
-		row := h.fleetRow(host)
 		rows = append(rows, row)
-		counts[row.Health]++
-		conditions = append(conditions, row.Conditions...)
 		storage = append(storage, h.volumes(host)...)
 		names[host.ID] = chartHostName(host)
 		if row.Memory != nil && row.Fresh {
@@ -318,6 +448,8 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 		charts = append(charts, fleetChart{c.title, c.kind, c.unit, string(b), c.resource})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return severity(rows[i].Health) > severity(rows[j].Health) })
+	sort.SliceStable(cards, func(i, j int) bool { return severity(cards[i].Health) > severity(cards[j].Health) })
+	sort.SliceStable(conditions, func(i, j int) bool { return severity(conditions[i].State) > severity(conditions[j].State) })
 	sort.SliceStable(storage, func(i, j int) bool { return storage[i].Percent > storage[j].Percent })
 	ranks := map[string][]fleetHost{}
 	for _, key := range []string{"CPU", "Memory", "Network"} {
@@ -343,5 +475,5 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	degraded := h.degraded
 	h.mu.Unlock()
-	h.render(w, "fleet", map[string]any{"View": view, "Title": title, "Views": views, "Hosts": rows, "Counts": counts, "Conditions": conditions, "Volumes": storage, "Ranks": ranks, "Charts": charts, "Sparks": sparks, "Start": start.UnixMilli(), "End": now.UnixMilli(), "Gap": step * 1500, "Step": step * 1000, "Range": window, "Query": query, "Offset": offset, "Previous": max(offset-100, 0), "Next": offset + 100, "More": len(hosts) == 100, "Degraded": degraded, "CSRF": h.csrf(r), "Local": h.config.AuthMode == "local"})
+	h.render(w, "fleet", map[string]any{"View": view, "Title": title, "Views": views, "Hosts": rows, "Summary": fleetSummary(counts, len(cards), len(hosts) == 100, degraded), "Cards": cards, "Total": len(cards), "Counts": counts, "Conditions": conditions, "Attention": conditions, "Volumes": storage, "Ranks": ranks, "Charts": charts, "Sparks": sparks, "Start": start.UnixMilli(), "End": now.UnixMilli(), "Gap": step * 1500, "Step": step * 1000, "Range": window, "Query": query, "Offset": offset, "Previous": max(offset-100, 0), "Next": offset + 100, "More": len(hosts) == 100, "Degraded": degraded, "CSRF": h.csrf(r), "Local": h.config.AuthMode == "local"})
 }

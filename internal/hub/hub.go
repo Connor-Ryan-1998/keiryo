@@ -68,7 +68,12 @@ func New(c config.Hub, s *store.Store) (*Hub, error) {
 		h.tokens[id] = sum
 	}
 	var err error
-	h.templates, err = template.New("").Funcs(template.FuncMap{"number": number, "reading": reading, "bytes": byteSize, "metricReading": h.metricReading, "containerState": h.containerState, "containerDetail": containerDetail, "resourcePolicy": h.resourcePolicyJSON, "stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") }}).ParseFS(assets, "templates/*.html")
+	h.templates, err = template.New("").Funcs(template.FuncMap{"number": number, "reading": reading, "bytes": byteSize, "rate": func(v *float64) string {
+		if v == nil {
+			return "Unavailable"
+		}
+		return rate(*v)
+	}, "iso": iso, "metricReading": h.metricReading, "containerState": h.containerState, "containerDetail": containerDetail, "resourcePolicy": h.resourcePolicyJSON, "stamp": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05 UTC") }}).ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}

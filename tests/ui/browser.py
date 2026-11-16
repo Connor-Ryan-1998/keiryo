@@ -101,30 +101,31 @@ def main():
                 page.get_by_label("Username").fill("admin")
                 page.get_by_label("Password", exact=True).fill("browser-test!")
                 page.get_by_role("button", name="Sign in", exact=True).click()
-                page.wait_for_selector('#overview .fleet-cell')
+                page.wait_for_selector('#overview .host-card')
                 page.wait_for_function("() => document.querySelector('#refresh-status').textContent.startsWith('Updated')")
-                assert page.locator('.fleet-cell').count() == 4
-                assert page.locator('#overview .fleet-cell.unavailable').count() == 1
+                assert page.locator('.host-card').count() == 4
+                assert page.locator('#overview .host-card.unavailable').count() == 1
+                assert page.locator('#overview time[data-format="relative"]').first.inner_text().endswith("ago")
                 screenshot = Path(os.getenv("MONITORING_SCREENSHOT", str(directory / "fleet.png")))
                 page.screenshot(path=str(screenshot), full_page=True)
                 # All responsive grid declarations must parse, not silently disappear.
                 page.set_viewport_size({"width": 390, "height": 844})
                 assert brand.locator("img").is_visible()
-                assert page.locator('.fleet-stats').evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length") == 2
+                assert page.locator('.host-cards').evaluate("el => getComputedStyle(el).gridTemplateColumns.split(' ').length") == 2
                 page.set_viewport_size({"width": 1440, "height": 1000})
                 # Each navigation link renders just its view and retains the toolbar selection.
                 page.get_by_label("Time range").select_option("1h")
-                page.get_by_label("Filter this page").fill("erp")
+                page.get_by_label("Filter hosts").fill("erp")
                 page.get_by_role("button", name="Apply", exact=True).click()
                 nav = page.get_by_role("navigation", name="Dashboard sections")
                 for title, section in [("Resource Views", "resources"), ("Fleet Metrics", "metrics"),
-                                       ("Alerts & Hosts", "conditions"), ("Fleet Overview", "overview")]:
+                                       ("Containers & backups", "conditions"), ("Fleet Overview", "overview")]:
                     nav.get_by_role("link", name=title, exact=True).click()
                     assert page.locator("#dashboard-data > section").count() == 1
                     assert page.locator(f"#{section}").count() == 1
                     assert nav.locator('[aria-current="page"]').inner_text() == title
                     assert page.get_by_label("Time range").input_value() == "1h"
-                    assert page.get_by_label("Filter this page").input_value() == "erp"
+                    assert page.get_by_label("Filter hosts").input_value() == "erp"
                 page.go_back()
                 assert page.locator("#conditions").count() == 1
                 page.reload()
@@ -139,16 +140,19 @@ def main():
                 state = comparison.evaluate("el => {const o=echarts.getInstanceByDom(el).getOption();return [o.dataZoom[0].start,o.dataZoom[0].end,o.legend[0].selected.erp1];}")
                 assert state == [25, 75, False], state
                 nav.get_by_role("link", name="Fleet Overview", exact=True).click()
-                page.wait_for_selector('.fleet-cell.critical')
+                page.wait_for_selector('.host-card.critical')
                 # Missed events need no replay log: reconnect refreshes from SQLite.
                 page.context.set_offline(True)
                 upload("erp2", "missed", datetime.now(timezone.utc), 98)
                 page.context.set_offline(False)
-                page.wait_for_function("() => document.querySelectorAll('.fleet-cell.critical').length===2")
+                page.wait_for_function("() => document.querySelectorAll('.host-card.critical').length===2")
                 page.goto(origin + "/hosts/gateway?range=24h")
                 page.wait_for_selector('.chart-panel canvas')
                 page.wait_for_function("() => document.querySelector('#refresh-status').textContent.startsWith('Updated')")
                 assert page.locator('.chart-panel canvas').count() == 7
+                first = page.locator('#dashboard-data .chart-panel').first
+                assert first.get_attribute("data-resource") == "cpu" and first.get_attribute("data-state") == "critical"
+                assert first.locator('.since').inner_text().strip()
                 page.locator('.chart-panel .plot').first.focus()
                 page.keyboard.press("End")
                 assert "95" in page.locator('.chart-readout').first.inner_text()
@@ -157,6 +161,10 @@ def main():
                 upload("gateway", "updated", datetime.now(timezone.utc), 40)
                 page.wait_for_function("() => JSON.parse(document.querySelector('.chart-panel').dataset.series)[0].Samples.some(p=>p.Value===40)")
                 assert "Preserved log snapshot" in page.locator('#logs').inner_text()
+                # Recovery must clear the reused chart's problem marking, not keep stale state.
+                first = page.locator('#dashboard-data .chart-panel').first
+                assert first.get_attribute("data-state") is None, first.get_attribute("data-state")
+                assert first.locator('.since').count() == 0
                 browser.close()
                 assert not errors, errors
                 print("Browser smoke passed: fleet views, filters, back/reload, mobile grids, SSE/reconnect, zoom/legend, host charts, keyboard and logs")

@@ -7,6 +7,7 @@ import (
 	"houselab/monitoring/internal/store"
 	"html"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -50,11 +51,14 @@ func TestDashboardMetricsAndRendering(t *testing.T) {
 			t.Fatalf("panel %d: %s, want %v", i, charts[i].Data, want)
 		}
 	}
-	stats := overview(host)
-	if stats[0].Value != "25.0%" || stats[1].Value != "30.0%" || stats[2].Value != "75.0%" || stats[3].Value != "1 running / 0 other" {
+	h := testHub(t, "proxy")
+	host.Seen = now
+	stats := h.hostStats(host)
+	want := []statView{{"CPU", "25.0%", "healthy"}, {"Memory", "30.0%", "healthy"}, {"Disk /", "75.0%", "healthy"}, {"Containers", "1 running", ""}}
+	if !reflect.DeepEqual(stats, want) {
 		t.Fatalf("incorrect overview: %+v", stats)
 	}
-	if overview(store.Host{})[0].Value != "Unavailable" {
+	if h.hostStats(store.Host{})[0].Value != "Unavailable" {
 		t.Fatal("missing reading rendered as zero")
 	}
 	if gap := chartGap([]store.Point{{At: now}, {At: now.Add(time.Minute)}, {At: now.Add(3 * time.Minute)}}, false, 300, 180); gap != 90000 {
@@ -64,7 +68,6 @@ func TestDashboardMetricsAndRendering(t *testing.T) {
 		t.Fatalf("summary gap %d", gap)
 	}
 
-	h := testHub(t, "proxy")
 	sample := host.Sample
 	sample.HostID, sample.ID, sample.Version = "node", "chart-sample", protocol.Version
 	for i := range sample.Metrics {
@@ -117,5 +120,50 @@ func TestChartGapUsesPerSeriesCadence(t *testing.T) {
 	points = append(points, store.Point{Name: "network_rx_bytes_s", Entity: "eth0", At: at}, store.Point{Name: "network_rx_bytes_s", Entity: "eth0", At: at.Add(time.Second)})
 	if got := chartGap(points, false, 300, 180); got != 90000 {
 		t.Fatalf("faster series broke slower series: %d", got)
+	}
+}
+
+func TestHostStatsWorstMount(t *testing.T) {
+	h := testHub(t, "proxy")
+	now := time.Now()
+	host := store.Host{ID: "node", Seen: now, Sample: protocol.Sample{At: now, Containers: []protocol.Container{{ID: "a", Name: "a", State: "running"}, {ID: "b", Name: "b", State: "exited"}, {ID: "c", Name: "c", State: "exited"}}, Metrics: []protocol.Metric{
+		{Name: "cpu_percent", Value: 20}, {Name: "memory_used_bytes", Value: 20}, {Name: "memory_total_bytes", Value: 100},
+		{Name: "filesystem_total_bytes", Entity: "/", Value: 100}, {Name: "filesystem_free_bytes", Entity: "/", Value: 80},
+		{Name: "filesystem_total_bytes", Entity: "/data", Value: 100}, {Name: "filesystem_free_bytes", Entity: "/data", Value: 5},
+	}}}
+	stats := h.hostStats(host)
+	if stats[2] != (statView{"Disk /data", "95.0%", "critical"}) || stats[3].Value != "1 running · 2 other" {
+		t.Fatalf("stats %+v", stats)
+	}
+	host.Sample.At, host.Seen = now.Add(-time.Hour), now.Add(-time.Hour)
+	if s := h.hostStats(host); s[0].State != "" || s[2].State != "" {
+		t.Fatalf("stale readings coloured as current: %+v", s)
+	}
+}
+
+func TestProblemChartFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		age   time.Duration
+		state bool
+	}{{"fresh", time.Second, true}, {"stale", time.Hour, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := testHub(t, "proxy")
+			at := time.Now().Add(-tc.age)
+			s := protocol.Sample{Version: 1, HostID: "node", ID: "p", At: at, Metrics: []protocol.Metric{
+				{Name: "cpu_percent", Value: 95, Weight: 1}, {Name: "memory_used_bytes", Value: 20, Weight: 1}, {Name: "memory_total_bytes", Value: 100, Weight: 1},
+			}}
+			if err := h.store.Ingest(context.Background(), s, at, 300); err != nil {
+				t.Fatal(err)
+			}
+			body := serveUI(t, h, "/hosts/node")
+			first := regexp.MustCompile(`<figure class="chart-panel"[^>]*>`).FindString(body)
+			if got := strings.Contains(body, "data-state="); got != tc.state {
+				t.Fatalf("data-state present=%v", got)
+			}
+			if tc.state && (!strings.Contains(first, `data-resource="cpu"`) || !strings.Contains(first, `data-state="critical"`) || !strings.Contains(first, `data-entity="CPU"`)) {
+				t.Fatalf("problem chart not first: %s", first)
+			}
+		})
 	}
 }
