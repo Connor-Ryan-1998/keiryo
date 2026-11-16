@@ -53,7 +53,7 @@ UI assets are embedded: rebuild to load changes.
 ### Container build
 
 ```sh
-docker build -t monitoring:dev .
+docker build -t keiryo:dev .
 ```
 
 Builds a Linux image containing both executables. It does not start services,

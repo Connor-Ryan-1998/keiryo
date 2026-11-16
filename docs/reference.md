@@ -247,7 +247,7 @@ Allow streaming `GET /events` on the same authenticated UI origin, without respo
 Build from the repository root; no parent repository files are needed:
 
 ```sh
-docker build -t monitoring:dev .
+docker build -t keiryo:dev .
 ```
 
 The Dockerfile builds the Go hub and target-platform static Rust agent into one scratch image, supporting Linux amd64 and arm64. The final image contains both executables, standard CA bundle and dependency licence notices under `/licenses`. It contains no deployment configuration or credentials. Linux Rust builds require Docker and trusted Cargo registry TLS; do not disable certificate verification to accommodate a private CA. See [third-party notices](../THIRD_PARTY.md); dependency notices do not grant an open-source licence to this project's own source.

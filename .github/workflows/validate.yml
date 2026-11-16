@@ -59,8 +59,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
           tags: |
-            ghcr.io/connor-ryan-1998/monitoring:latest
-            ghcr.io/connor-ryan-1998/monitoring:sha-${{ github.sha }}
+            ghcr.io/connor-ryan-1998/keiryo:latest
+            ghcr.io/connor-ryan-1998/keiryo:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/Connor-Ryan-1998/keiryo
             org.opencontainers.image.revision=${{ github.sha }}
