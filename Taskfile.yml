@@ -6,13 +6,13 @@ vars:
 
 tasks:
   test:
-    desc: "Test monitoring. SUITE=unit (default)|go|agent|ui|browser|integration|otlp|otlp-integration|recovery|preview"
+    desc: "Test monitoring. SUITE=unit (default)|go|agent|ui|browser|integration|otlp|otlp-integration|recovery|preview|release"
     vars:
       SUITE: '{{.SUITE | default "unit"}}'
     requires:
       vars:
         - name: SUITE
-          enum: [unit, go, agent, ui, browser, integration, otlp, otlp-integration, recovery, preview]
+          enum: [unit, go, agent, ui, browser, integration, otlp, otlp-integration, recovery, preview, release]
     cmds:
       - task: 'test:{{.SUITE}}'
 
@@ -133,6 +133,12 @@ tasks:
       - task: agent:fixture
       - task: test:go
       - task: test:preview
+      - task: test:release
+
+  test:release:
+    internal: true
+    cmds:
+      - python -m unittest discover -s tools -p 'test_release.py'
 
   test:go:
     internal: true
@@ -149,7 +155,7 @@ tasks:
     internal: true
     deps: [build:native]
     cmds:
-      - python -m unittest discover -s tools -p 'test_*.py'
+      - python -m unittest discover -s tools -p 'test_preview.py'
 
   build:native:
     internal: true
