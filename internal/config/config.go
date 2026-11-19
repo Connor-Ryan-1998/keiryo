@@ -28,7 +28,6 @@ type Hub struct {
 	RawHours              int               `json:"raw_hours"`
 	SummaryDays           int               `json:"summary_days"`
 	BucketSeconds         int               `json:"bucket_seconds"`
-	StorageBytes          int64             `json:"storage_bytes"`
 	StaleSeconds          int               `json:"stale_seconds"`
 	OfflineSeconds        int               `json:"offline_seconds"`
 	FutureSeconds         int               `json:"future_seconds"`
@@ -64,7 +63,7 @@ type Agent struct {
 }
 
 func DefaultHub() Hub {
-	return Hub{UIListen: "127.0.0.1:9080", AgentListen: "127.0.0.1:9081", Database: "monitoring.db", AuthMode: "local", PublicURL: "http://127.0.0.1:9080", Agents: map[string]string{}, RawHours: 24, SummaryDays: 30, BucketSeconds: 300, StorageBytes: 1 << 30, StaleSeconds: 180, OfflineSeconds: 300, FutureSeconds: 300, MaxBodyBytes: 2 << 20, MaxEntities: 2048, MaxRequests: 32, LogLines: 200, LogBytes: 256 << 10, LogTimeoutSeconds: 15, LogQueue: 32, AlertPolicy: defaultAlertPolicy(), AlertPendingSeconds: 120}
+	return Hub{UIListen: "127.0.0.1:9080", AgentListen: "127.0.0.1:9081", Database: "monitoring.db", AuthMode: "local", PublicURL: "http://127.0.0.1:9080", Agents: map[string]string{}, RawHours: 24, SummaryDays: 30, BucketSeconds: 300, StaleSeconds: 180, OfflineSeconds: 300, FutureSeconds: 300, MaxBodyBytes: 2 << 20, MaxEntities: 2048, MaxRequests: 32, LogLines: 200, LogBytes: 256 << 10, LogTimeoutSeconds: 15, LogQueue: 32, AlertPolicy: defaultAlertPolicy(), AlertPendingSeconds: 120}
 }
 func DefaultAgent() Agent {
 	return Agent{IntervalSeconds: 60, BufferSamples: 60, PollSeconds: 5, DockerSocket: "/var/run/docker.sock", ExcludeInterfaces: []string{"lo"}, LogBytes: 256 << 10, LogLines: 200, LogTimeoutSeconds: 15}
@@ -126,7 +125,7 @@ func LoadHub(path string) (Hub, error) {
 	if c.RawHours < 1 || c.RawHours > 8760 || c.SummaryDays < 1 || c.SummaryDays > 3650 || c.SummaryDays*24 < c.RawHours || c.BucketSeconds < 60 || c.BucketSeconds > 3600 || c.RawHours*3600%c.BucketSeconds != 0 {
 		return c, errors.New("invalid retention durations")
 	}
-	if c.StorageBytes < 1<<20 || c.StaleSeconds < 1 || c.OfflineSeconds <= c.StaleSeconds || c.FutureSeconds < 0 || c.MaxBodyBytes < 1024 || c.MaxBodyBytes > 16<<20 || c.MaxEntities < 1 || c.MaxEntities > 10000 || c.MaxRequests < 1 || c.MaxRequests > 1024 || c.LogLines < 1 || c.LogLines > 10000 || c.LogBytes < 1 || c.LogBytes > 4<<20 || c.LogTimeoutSeconds < 1 || c.LogTimeoutSeconds > 60 || c.LogQueue < 1 || c.LogQueue > 1024 {
+	if c.StaleSeconds < 1 || c.OfflineSeconds <= c.StaleSeconds || c.FutureSeconds < 0 || c.MaxBodyBytes < 1024 || c.MaxBodyBytes > 16<<20 || c.MaxEntities < 1 || c.MaxEntities > 10000 || c.MaxRequests < 1 || c.MaxRequests > 1024 || c.LogLines < 1 || c.LogLines > 10000 || c.LogBytes < 1 || c.LogBytes > 4<<20 || c.LogTimeoutSeconds < 1 || c.LogTimeoutSeconds > 60 || c.LogQueue < 1 || c.LogQueue > 1024 {
 		return c, errors.New("invalid resource or freshness limits")
 	}
 	if c.AuthMode != "local" && c.AuthMode != "proxy" {

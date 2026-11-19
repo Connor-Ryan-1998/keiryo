@@ -226,7 +226,7 @@ func TestOTLPAmbiguousStreamsAndCleanup(t *testing.T) {
 	if r := ingestPoints(t, s, b); r.Rejected != 1 {
 		t.Fatal("ambiguous stream accepted", r)
 	}
-	if err := s.Maintain(context.Background(), time.Now(), time.Minute, 24*time.Hour, 1<<30); err != nil {
+	if err := s.Maintain(context.Background(), time.Now(), time.Minute, 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -331,7 +331,7 @@ func TestOTLPLatestRetentionPreservesPrivateState(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := s.Maintain(context.Background(), now, time.Hour, 24*time.Hour, 1<<30); err != nil {
+			if err := s.Maintain(context.Background(), now, time.Hour, 24*time.Hour); err != nil {
 				t.Fatal(err)
 			}
 			h, _ := s.Host(context.Background(), "node")
@@ -380,7 +380,7 @@ func TestOTLPLatestPersistentBoundsAndContainerChurn(t *testing.T) {
 	if !found {
 		t.Fatal("obsolete container names permanently crowded out replacement")
 	}
-	if err = s.Maintain(context.Background(), now, time.Hour, 24*time.Hour, 1<<30); err != nil {
+	if err = s.Maintain(context.Background(), now, time.Hour, 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	h, _ = s.Host(context.Background(), "node")

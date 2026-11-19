@@ -36,7 +36,7 @@ func TestIngestDedupRollupAndRetention(t *testing.T) {
 	if len(points) != 1 || points[0].Average != 50 || points[0].Maximum != 80 || points[0].Count != 2 {
 		t.Fatalf("bad rollup: %+v", points)
 	}
-	if err = s.Maintain(ctx, now.Add(25*time.Hour), 24*time.Hour, 30*24*time.Hour, 1<<30); err != nil {
+	if err = s.Maintain(ctx, now.Add(25*time.Hour), 24*time.Hour, 30*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := s.History(ctx, "node", now, now.Add(time.Hour), false, 300)
@@ -51,7 +51,7 @@ func TestIngestDedupRollupAndRetention(t *testing.T) {
 	if err != nil || len(hosts) != 1 {
 		t.Fatalf("hosts %v %v", hosts, err)
 	}
-	if err = s.Maintain(ctx, now.Add(31*24*time.Hour), 24*time.Hour, 30*24*time.Hour, 1<<30); err != nil {
+	if err = s.Maintain(ctx, now.Add(31*24*time.Hour), 24*time.Hour, 30*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	points, _ = s.History(ctx, "node", now, now.Add(time.Hour), true, 300)
@@ -364,51 +364,5 @@ func TestRetainsCategoricalHistoryAndIndexesCascade(t *testing.T) {
 	}
 	if !strings.Contains(detail, "points_sample") {
 		t.Fatalf("unindexed retention lookup: %s", detail)
-	}
-}
-
-func TestStorageBudgetReportsFailureToConverge(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	ctx := context.Background()
-	now := time.Now()
-	x := protocol.Sample{HostID: "n", ID: "one", At: now, DisplayName: strings.Repeat("x", 4096)}
-	if err = s.Ingest(ctx, x, now, 300); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Maintain(ctx, now, 24*time.Hour, 30*24*time.Hour, 1); err == nil {
-		t.Fatal("budget pressure not surfaced")
-	}
-}
-
-func TestBudgetPrunesMoreThanOneFixedBatch(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	now := time.Now()
-	tx, err := s.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 6000; i++ {
-		_, err = tx.Exec(`INSERT INTO summaries VALUES('n',?,'cpu_percent',?,1,1,1,1,1)`, now.Unix()-int64(i)*300, fmt.Sprint(i)+strings.Repeat("x", 500))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Maintain(context.Background(), now, 24*time.Hour, 30*24*time.Hour, 1<<20); err != nil {
-		t.Fatal(err)
-	}
-	live, err := s.liveBytes(context.Background())
-	if err != nil || live > 1<<20 {
-		t.Fatalf("budget did not converge: %d %v", live, err)
 	}
 }

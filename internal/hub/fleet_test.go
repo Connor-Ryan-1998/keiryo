@@ -377,6 +377,32 @@ func TestNeedsAttentionHiddenWhenHealthy(t *testing.T) {
 	}
 }
 
+func TestMaintenanceBannerClearsAfterSuccess(t *testing.T) {
+	h := testHub(t, "proxy")
+	ingestCPU(t, h, "node", 20)
+	failed, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.maintain(failed, time.Now())
+	body := serveUI(t, h, "/")
+	if !strings.Contains(body, `role="alert">Database maintenance failed`) {
+		t.Fatal("maintenance failure not surfaced")
+	}
+	h.maintain(context.Background(), time.Now())
+	body = serveUI(t, h, "/")
+	if strings.Contains(body, `role="alert"`) || !strings.Contains(body, "within thresholds") {
+		t.Fatal("maintenance banner persisted after a successful run")
+	}
+}
+
+func TestMaintenanceSuccessKeepsOtherErrors(t *testing.T) {
+	h := testHub(t, "proxy")
+	h.setError("Metrics could not be committed; check database and disk capacity.")
+	h.maintain(context.Background(), time.Now())
+	if body := serveUI(t, h, "/"); !strings.Contains(body, `role="alert">Metrics could not be committed`) {
+		t.Fatal("maintenance success cleared an unrelated error")
+	}
+}
+
 func TestZeroTimesRenderNever(t *testing.T) {
 	h := testHub(t, "proxy")
 	body := serveUI(t, h, "/")

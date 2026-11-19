@@ -307,25 +307,12 @@ func (s *Store) States(ctx context.Context, host string, start, end time.Time, s
 	return out, rows.Err()
 }
 
-var ErrStorageBudget = errors.New("retained database pages exceed storage budget after bounded pruning")
-
-func (s *Store) liveBytes(ctx context.Context) (int64, error) {
-	var pages, free, size int64
-	for _, p := range []struct {
-		q string
-		v *int64
-	}{{"PRAGMA page_count", &pages}, {"PRAGMA freelist_count", &free}, {"PRAGMA page_size", &size}} {
-		if err := s.db.QueryRowContext(ctx, p.q).Scan(p.v); err != nil {
-			return 0, err
-		}
-	}
-	return (pages - free) * size, nil
-}
-
-func (s *Store) Maintain(ctx context.Context, now time.Time, raw, summary time.Duration, budget int64) error {
+// Maintain applies time-based retention. It holds the writer lock, so the
+// timeout stops a stuck pass from blocking ingest indefinitely.
+func (s *Store) Maintain(ctx context.Context, now time.Time, raw, summary time.Duration) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := s.pruneLatest(ctx, now.Add(-raw)); err != nil {
 		return err
@@ -336,41 +323,6 @@ func (s *Store) Maintain(ctx context.Context, now time.Time, raw, summary time.D
 		cut int64
 	}{{`DELETE FROM samples WHERE rowid IN(SELECT rowid FROM samples WHERE at<? ORDER BY at LIMIT 1000)`, now.Add(-raw).Unix()}, {`DELETE FROM summaries WHERE rowid IN(SELECT rowid FROM summaries WHERE at<? ORDER BY at LIMIT 10000)`, now.Add(-summary).Unix()}, {`DELETE FROM state_summaries WHERE rowid IN(SELECT rowid FROM state_summaries WHERE at<? ORDER BY at LIMIT 1000)`, now.Add(-summary).Unix()}, {`DELETE FROM sessions WHERE expires<?`, now.Unix()}, {`DELETE FROM otlp_observations WHERE rowid IN(SELECT rowid FROM otlp_observations WHERE at<? ORDER BY at LIMIT 10000)`, now.Add(-raw).UnixNano()}, {`DELETE FROM otlp_owners WHERE at<?`, now.Add(-raw).UnixNano()}, {`DELETE FROM otlp_series WHERE at<?`, now.Add(-raw).UnixNano()}} {
 		if _, err := s.db.ExecContext(ctx, q.sql, q.cut); err != nil {
-			return err
-		}
-	}
-	for {
-		live, err := s.liveBytes(ctx)
-		if err != nil {
-			return err
-		}
-		if live <= budget {
-			break
-		}
-		var cut sql.NullInt64
-		if err = s.db.QueryRowContext(ctx, `SELECT MIN(at) FROM (
- SELECT MAX(at) AS at FROM (SELECT at FROM summaries ORDER BY at LIMIT 1000)
- UNION ALL SELECT MAX(at) FROM (SELECT at FROM state_summaries ORDER BY at LIMIT 100)
-  UNION ALL SELECT MAX(at) FROM (SELECT at FROM samples WHERE data!='{}' ORDER BY at LIMIT 100)
-  UNION ALL SELECT MAX(at) FROM (SELECT at FROM points ORDER BY at LIMIT 100)
-  UNION ALL SELECT MAX(at / 1000000000) FROM (SELECT at FROM otlp_observations ORDER BY at LIMIT 1000)
- )`).Scan(&cut); err != nil {
-			return err
-		}
-		if !cut.Valid {
-			return ErrStorageBudget
-		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		for _, q := range []string{`DELETE FROM points WHERE rowid IN(SELECT rowid FROM points WHERE at<=? ORDER BY at LIMIT 1000)`, `UPDATE samples SET data='{}' WHERE rowid IN(SELECT rowid FROM samples WHERE at<=? AND data!='{}' ORDER BY at LIMIT 100)`, `DELETE FROM summaries WHERE rowid IN(SELECT rowid FROM summaries WHERE at<=? ORDER BY at LIMIT 1000)`, `DELETE FROM state_summaries WHERE rowid IN(SELECT rowid FROM state_summaries WHERE at<=? ORDER BY at LIMIT 100)`, `DELETE FROM otlp_observations WHERE rowid IN(SELECT rowid FROM otlp_observations WHERE at / 1000000000<=? ORDER BY at LIMIT 1000)`} {
-			if _, err = tx.ExecContext(ctx, q, cut.Int64); err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-		if err = tx.Commit(); err != nil {
 			return err
 		}
 	}

@@ -77,7 +77,6 @@ JSON files override defaults; restart to apply. Unknown keys, multiple JSON valu
 | `raw_hours` | `24` |
 | `bucket_seconds` | `300`; grid is recorded in the database |
 | `summary_days` | `30` |
-| `storage_bytes` | `1073741824`; retained-page target, **not** total file-size cap |
 | `stale_seconds`, `offline_seconds` | `180`, `300` since accepted contact |
 | `disk_health_mountpoints` | `[]` (all mounts); exact clean absolute mountpoints for disk health, alerts and the fleet storage table, e.g. `["/"]`. Collection and detailed host charts are unchanged. |
 | `alert_policy` | Resource thresholds and container severity/lifecycle policy; see below. Omitted fields retain defaults. |

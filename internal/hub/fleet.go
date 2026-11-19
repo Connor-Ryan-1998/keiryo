@@ -486,6 +486,9 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.Lock()
 	degraded := h.degraded
+	if degraded == "" {
+		degraded = h.maintenance
+	}
 	h.mu.Unlock()
 	h.render(w, "fleet", map[string]any{"View": view, "Title": title, "Views": views, "Hosts": rows, "Summary": fleetSummary(counts, len(cards), len(hosts) == 100, degraded), "Cards": cards, "Total": len(cards), "Counts": counts, "Conditions": conditions, "Attention": conditions, "Volumes": storage, "Ranks": ranks, "Charts": charts, "Sparks": sparks, "Start": start.UnixMilli(), "End": now.UnixMilli(), "Gap": step * 1500, "Step": step * 1000, "Range": window, "Query": query, "Offset": offset, "Previous": max(offset-100, 0), "Next": offset + 100, "More": len(hosts) == 100, "Degraded": degraded, "CSRF": h.csrf(r), "Local": h.config.AuthMode == "local"})
 }

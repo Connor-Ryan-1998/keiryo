@@ -14,6 +14,7 @@ import (
 	"houselab/monitoring/internal/store"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type Hub struct {
 	subscribers   map[chan string]struct{}
 	mu            sync.Mutex
 	degraded      string
+	maintenance   string
 	loginWindow   time.Time
 	loginAttempts int
 }
@@ -109,11 +111,22 @@ func (h *Hub) Maintenance(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := h.store.Maintain(ctx, time.Now(), time.Duration(h.config.RawHours)*time.Hour, time.Duration(h.config.SummaryDays)*24*time.Hour, h.config.StorageBytes); err != nil {
-				h.setError("Storage maintenance failed; check disk capacity and database health.")
-			}
+			h.maintain(ctx, time.Now())
 		}
 	}
+}
+
+// maintain runs one retention pass. Its banner is tracked separately from other
+// errors so a later successful pass clears it without hiding unrelated failures.
+func (h *Hub) maintain(ctx context.Context, now time.Time) {
+	status := ""
+	if err := h.store.Maintain(ctx, now, time.Duration(h.config.RawHours)*time.Hour, time.Duration(h.config.SummaryDays)*24*time.Hour); err != nil {
+		slog.Error("storage maintenance failed", "error", err)
+		status = "Database maintenance failed; check hub logs."
+	}
+	h.mu.Lock()
+	h.maintenance = status
+	h.mu.Unlock()
 }
 
 func (h *Hub) AgentHandler() http.Handler {
