@@ -270,6 +270,7 @@ func ingestCPUAt(t *testing.T, h *Hub, id string, cpu float64, now time.Time) {
 
 func TestOverviewTriageIgnoresFilter(t *testing.T) {
 	h := testHub(t, "proxy")
+	h.config.AlertPendingSeconds = 0 // filtering, not sustain timing
 	ingestCPU(t, h, "gateway", 95)
 	ingestCPU(t, h, "erp", 20)
 	body := serveUI(t, h, "/?q=erp")
@@ -370,7 +371,7 @@ func TestNeedsAttentionHiddenWhenHealthy(t *testing.T) {
 	if strings.Contains(body, `id="attention-title"`) || !strings.Contains(body, "All 1 host is reporting within thresholds") {
 		t.Fatal("healthy fleet not presented as all clear")
 	}
-	h.setError("Alert delivery failed; check Discord configuration, connectivity and database health.")
+	h.setStatus(statusNotify, "Alert delivery failed; check Discord configuration, connectivity and database health.")
 	body = serveUI(t, h, "/")
 	if strings.Contains(body, "within thresholds") || !strings.Contains(body, `role="alert">Alert delivery failed`) {
 		t.Fatal("degraded hub presented as all clear")
@@ -396,7 +397,7 @@ func TestMaintenanceBannerClearsAfterSuccess(t *testing.T) {
 
 func TestMaintenanceSuccessKeepsOtherErrors(t *testing.T) {
 	h := testHub(t, "proxy")
-	h.setError("Metrics could not be committed; check database and disk capacity.")
+	h.setStatus(statusSamples, "Metrics could not be committed; check database and disk capacity.")
 	h.maintain(context.Background(), time.Now())
 	if body := serveUI(t, h, "/"); !strings.Contains(body, `role="alert">Metrics could not be committed`) {
 		t.Fatal("maintenance success cleared an unrelated error")

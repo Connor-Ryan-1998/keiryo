@@ -52,6 +52,7 @@ article,.chart-panel,details{background:var(--panel);border:1px solid var(--bord
 .pill.warning,.pill.stale{background:var(--amber-bg);border-color:var(--amber);color:var(--amber)}
 .pill.critical,.pill.offline{background:var(--red-bg);border-color:var(--red);color:var(--red-text)}
 .pill.unavailable,.pill.never{background:var(--border);color:var(--text)}
+.pending{color:var(--amber)}.pill.pending{border-style:dashed;border-color:var(--amber);color:var(--amber)}
 
 /* Overview */
 .summary{font-size:1.15rem;color:var(--strong);margin:var(--s4) 0}

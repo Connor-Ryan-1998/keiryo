@@ -11,7 +11,7 @@ import (
 func TestBrandingAvailableBeforeLogin(t *testing.T) {
 	ui := testHub(t, "local").UIHandler()
 	page := request(ui, "GET", "/login", "", nil)
-	for _, want := range []string{"<title>keiryō", `rel="icon" type="image/svg+xml" href="/static/keiryo.svg"`, `src="/static/keiryo.svg"`, ">keiryō</a>"} {
+	for _, want := range []string{"<title>keiryō", `rel="icon" type="image/svg+xml" href="/static/keiryo.svg?v=`, `src="/static/keiryo.svg?v=`, ">keiryō</a>"} {
 		if !strings.Contains(page.Body.String(), want) {
 			t.Fatalf("login missing branding: %s", want)
 		}

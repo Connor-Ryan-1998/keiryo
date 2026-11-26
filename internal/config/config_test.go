@@ -105,3 +105,29 @@ func TestDiskHealthMountpointsConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestHeartbeatConfig(t *testing.T) {
+	for _, tc := range []struct {
+		data  string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"heartbeat_url_file":"hb","heartbeat_seconds":30}`, true},
+		{`{"heartbeat_seconds":5}`, false},
+		{`{"heartbeat_seconds":3601}`, false},
+	} {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "hub.json")
+		os.WriteFile(path, []byte(tc.data), 0600)
+		c, err := LoadHub(path)
+		if (err == nil) != tc.valid {
+			t.Fatalf("%s: valid=%v err=%v", tc.data, tc.valid, err)
+		}
+		if tc.valid && tc.data == `{}` && (c.HeartbeatSeconds != 60 || c.HeartbeatURLFile != "") {
+			t.Fatalf("heartbeat defaults %+v", c)
+		}
+		if tc.valid && c.HeartbeatURLFile != "" && c.HeartbeatURLFile != filepath.Join(dir, "hb") {
+			t.Fatalf("heartbeat path not relative to config: %s", c.HeartbeatURLFile)
+		}
+	}
+}

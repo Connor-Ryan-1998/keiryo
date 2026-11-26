@@ -80,9 +80,10 @@ func (h *Hub) host(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	charts := chartViews(points, host)
-	h.markProblems(charts, host)
+	row := h.displayRow(r.Context(), host, end)
+	h.markProblems(charts, row)
 	h.render(w, "host", map[string]any{
-		"Host":  hostView{Host: host, Status: h.status(host.Seen), Stats: h.hostStats(host), CanFetchLogs: h.canFetchLogs(host), LiveContainers: h.currentReadings(host).Sample.Containers},
+		"Host":  hostView{Host: host, Status: h.status(host.Seen), Stats: h.hostStats(row), CanFetchLogs: h.canFetchLogs(host), LiveContainers: h.currentReadings(host).Sample.Containers},
 		"Nodes": nodes, "Range": window, "Charts": charts,
 		"Start": end.Add(-time.Duration(hours) * time.Hour).UnixMilli(), "End": end.UnixMilli(),
 		"Gap":    chartGap(points, summary, h.config.BucketSeconds, h.config.StaleSeconds),

@@ -35,10 +35,9 @@ func discordWebhook(path string) (string, error) {
 }
 
 // Notifications runs independently of browsers and ingestion; slow webhooks cannot block either.
+// Condition tracking always runs because the dashboard uses it to tell sustained
+// breaches from short spikes; Discord delivery runs only when configured.
 func (h *Hub) Notifications(ctx context.Context) {
-	if h.config.DiscordWebhookFile == "" {
-		return
-	}
 	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -47,45 +46,82 @@ func (h *Hub) Notifications(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			webhook, err := discordWebhook(h.config.DiscordWebhookFile)
-			if err != nil {
-				h.setError("Discord notification secret is unavailable or invalid.")
-				continue
-			}
-			pass, cancel := context.WithTimeout(ctx, 20*time.Second)
-			ids := make([]string, 0, len(h.config.Agents))
-			for id := range h.config.Agents {
-				ids = append(ids, id)
-			}
-			sort.Strings(ids)
-			for _, id := range ids {
-				host, e := h.store.Host(pass, id)
-				if e == nil {
-					e = h.reconcileNotifications(pass, host, time.Now(), client, webhook)
-				}
-				if e != nil {
-					h.setError("Alert delivery failed; check Discord configuration, connectivity and database health.")
-					break
+			webhook := ""
+			if h.config.DiscordWebhookFile != "" {
+				var err error
+				if webhook, err = discordWebhook(h.config.DiscordWebhookFile); err != nil {
+					h.setStatus(statusNotify, "Discord notification secret is unavailable or invalid.")
+					continue
 				}
 			}
-			cancel()
+			h.notificationPass(ctx, client, webhook, time.Now())
 		}
 	}
 }
 
+// notificationPass reconciles every configured host once. An empty webhook only
+// tracks conditions. The banner clears only after a complete pass while no
+// delivery is backing off, so a webhook that is still failing never looks
+// healthy just because its retry is not yet due.
+func (h *Hub) notificationPass(ctx context.Context, client *http.Client, webhook string, now time.Time) {
+	pass, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	ids := make([]string, 0, len(h.config.Agents))
+	for id := range h.config.Agents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		host, err := h.store.Host(pass, id)
+		if err == nil {
+			err = h.reconcileNotifications(pass, host, now, client, webhook)
+		}
+		if err != nil {
+			h.setStatus(statusNotify, "Alert delivery failed; check Discord configuration, connectivity and database health.")
+			return
+		}
+	}
+	if len(h.config.HTTPChecks) > 0 {
+		signals := h.checkSignals()
+		states, err := h.trackConditions(pass, checksScope, signals, false, now)
+		if err == nil && webhook != "" {
+			err = h.deliverNotifications(pass, checksScope, "HTTP checks", h.config.PublicURL+"/?view=conditions#checks", states, signals, now, client, webhook)
+		}
+		if err != nil {
+			h.setStatus(statusNotify, "Alert delivery failed; check Discord configuration, connectivity and database health.")
+			return
+		}
+	}
+	if retryAt, err := h.store.NotificationRetryAt(pass); err == nil && now.Unix() >= retryAt {
+		h.setStatus(statusNotify, "")
+	}
+}
+
 func (h *Hub) reconcileNotifications(ctx context.Context, host store.Host, now time.Time, client *http.Client, webhook string) error {
-	states, err := h.store.Notifications(ctx, host.ID)
-	if err != nil {
+	signals := h.fleetRow(host).Signals
+	states, err := h.trackConditions(ctx, host.ID, signals, h.stateFresh(host.Sample), now)
+	if err != nil || webhook == "" {
 		return err
 	}
-	row := h.fleetRow(host)
+	label := fmt.Sprintf("%s (%s)", hostName(host), host.ID)
+	return h.deliverNotifications(ctx, host.ID, label, h.config.PublicURL+"/hosts/"+url.PathEscape(host.ID), states, signals, now, client, webhook)
+}
+
+// trackConditions records when each condition entered its current state and
+// which state last lasted the pending period (Confirmed). It is the single
+// source of truth for both the dashboard and Discord.
+func (h *Hub) trackConditions(ctx context.Context, scope string, observed []condition, fresh bool, now time.Time) (map[string]store.Notification, error) {
+	states, err := h.store.Notifications(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
 	signals := map[string]condition{}
-	for _, signal := range row.Signals {
+	for _, signal := range observed {
 		signals[signal.Key] = signal
 	}
 	// A fresh complete state snapshot can clear collection errors, but absence of a
 	// container or missing metrics must never be interpreted as a healthy service.
-	if h.stateFresh(host.Sample) {
+	if fresh {
 		for key := range states {
 			if strings.HasPrefix(key, "collection/") {
 				if _, exists := signals[key]; !exists {
@@ -103,6 +139,9 @@ func (h *Hub) reconcileNotifications(ctx context.Context, host store.Host, now t
 			old.State, old.Since = signal.State, now.Unix()
 			// Preserve delivery cooldowns when a flapping condition changes state.
 		}
+		if now.Unix()-old.Since >= int64(h.config.AlertPendingSeconds) {
+			old.Confirmed = old.State
+		}
 		old.Kind, old.Detail = signal.Kind, signal.Detail
 		if old.State == "healthy" && old.Delivered == "" {
 			delete(states, key)
@@ -110,8 +149,16 @@ func (h *Hub) reconcileNotifications(ctx context.Context, host store.Host, now t
 			states[key] = old
 		}
 	}
-	if err = h.store.SaveNotifications(ctx, host.ID, states); err != nil {
-		return err
+	if err = h.store.SaveNotifications(ctx, scope, states); err != nil {
+		return nil, err
+	}
+	return states, nil
+}
+
+func (h *Hub) deliverNotifications(ctx context.Context, scope, label, link string, states map[string]store.Notification, observed []condition, now time.Time, client *http.Client, webhook string) error {
+	signals := map[string]bool{}
+	for _, signal := range observed {
+		signals[signal.Key] = true
 	}
 	retryAt, err := h.store.NotificationRetryAt(ctx)
 	if err != nil {
@@ -128,23 +175,25 @@ func (h *Hub) reconcileNotifications(ctx context.Context, host store.Host, now t
 	sent := 0
 	for _, key := range keys {
 		n := states[key]
-		if _, observed := signals[key]; !observed {
+		// Collection recovery is synthesized by tracking, so it counts as observed.
+		if !signals[key] && !(strings.HasPrefix(key, "collection/") && n.State == "healthy") {
 			continue
 		}
 		if n.State == n.Delivered || now.Unix() < n.Next || now.Unix()-n.Since < int64(h.config.AlertPendingSeconds) {
 			continue
 		}
-		label := strings.ToUpper(n.State)
+		status := strings.ToUpper(n.State)
 		if n.State == "healthy" {
-			label = "RECOVERED"
+			status = "RECOVERED"
 		}
-		message := fmt.Sprintf("[%s] %s (%s) · %s\n%s\n%s", label, hostName(host), host.ID, n.Kind, n.Detail, h.config.PublicURL+"/hosts/"+url.PathEscape(host.ID))
+		message := fmt.Sprintf("[%s] %s · %s\n%s\n%s", status, label, n.Kind, n.Detail, link)
 		delay, sendErr := sendDiscord(ctx, client, webhook, message, n.Attempts)
 		if sendErr != nil {
+			h.counters.add(`keiryo_notifications_total{result="failed"}`, 1)
 			n.Attempts = min(n.Attempts+1, 10)
 			n.Next = now.Add(delay).Unix()
 			states[key] = n
-			if err = h.store.SaveNotifications(ctx, host.ID, states); err != nil {
+			if err = h.store.SaveNotifications(ctx, scope, states); err != nil {
 				return err
 			}
 			if err = h.store.SetNotificationRetryAt(ctx, n.Next); err != nil {
@@ -152,13 +201,14 @@ func (h *Hub) reconcileNotifications(ctx context.Context, host store.Host, now t
 			}
 			return sendErr
 		}
+		h.counters.add(`keiryo_notifications_total{result="sent"}`, 1)
 		n.Delivered, n.Attempts, n.Next = n.State, 0, 0
 		if n.State == "healthy" {
 			delete(states, key)
 		} else {
 			states[key] = n
 		}
-		if err = h.store.SaveNotifications(ctx, host.ID, states); err != nil {
+		if err = h.store.SaveNotifications(ctx, scope, states); err != nil {
 			return err
 		}
 		sent++

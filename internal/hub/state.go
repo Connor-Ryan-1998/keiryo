@@ -11,21 +11,25 @@ import (
 func (h *Hub) ingestState(w http.ResponseWriter, r *http.Request) {
 	var state protocol.AgentState
 	if err := decodeJSON(r, &state); err != nil {
+		h.countIngest("state", "invalid")
 		http.Error(w, "invalid state JSON", 400)
 		return
 	}
 	sample := protocol.Sample{Version: state.Version, HostID: state.HostID, ID: state.ID, At: state.At, DisplayName: state.DisplayName, AgentVersion: state.AgentVersion, Containers: state.Containers, Errors: state.Errors}
 	now := time.Now()
 	if err := sample.Validate(r.Header.Get("X-Host-ID"), now, time.Duration(h.config.RawHours)*time.Hour, time.Duration(h.config.FutureSeconds)*time.Second, h.config.MaxEntities); err != nil {
+		h.countIngest("state", "invalid")
 		http.Error(w, err.Error(), 400)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := h.store.IngestState(ctx, state, now, h.config.BucketSeconds); err != nil {
+		h.countIngest("state", "error")
 		http.Error(w, "storage unavailable", 503)
 		return
 	}
+	h.countIngest("state", "accepted")
 	h.notify(state.HostID)
 	w.WriteHeader(204)
 }

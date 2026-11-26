@@ -107,16 +107,15 @@ func chartViews(points []store.Point, host store.Host) []chartView {
 }
 
 // hostStats summarises the latest readings; states are only shown for fresh readings.
-func (h *Hub) hostStats(host store.Host) []statView {
-	row := h.fleetRow(host)
-	host = row.Host
-	stat := func(label, resource string, v *float64) statView {
-		if v == nil {
+func (h *Hub) hostStats(row fleetHost) []statView {
+	host := row.Host
+	stat := func(label string, view metricView) statView {
+		if view.Value == nil {
 			return statView{label, "Unavailable", ""}
 		}
-		out := statView{label, fmt.Sprintf("%.1f%%", *v), ""}
+		out := statView{label, fmt.Sprintf("%.1f%%", *view.Value), ""}
 		if row.Fresh {
-			out.State = h.metricReading(resource, v).State
+			out.State = view.State
 		}
 		return out
 	}
@@ -145,7 +144,7 @@ func (h *Hub) hostStats(host store.Host) []statView {
 			}
 		}
 	}
-	return []statView{stat("CPU", "cpu", row.CPU), stat("Memory", "memory", row.Memory), stat(diskLabel, "disk", row.Disk), {"Containers", containers, ""}}
+	return []statView{stat("CPU", row.CPUView), stat("Memory", row.MemoryView), stat(diskLabel, row.DiskView), {"Containers", containers, ""}}
 }
 
 // worstMount is the fullest monitored mount, the same one that drives disk health.
@@ -160,19 +159,18 @@ func (h *Hub) worstMount(host store.Host) string {
 }
 
 // markProblems flags charts behind current resource conditions and moves them first.
-func (h *Hub) markProblems(charts []chartView, host store.Host) {
-	row := h.fleetRow(host)
+func (h *Hub) markProblems(charts []chartView, row fleetHost) {
 	if !row.Fresh {
 		return
 	}
-	readings := map[string]*float64{"cpu": row.CPU, "memory": row.Memory, "disk": row.Disk}
+	readings := map[string]metricView{"cpu": row.CPUView, "memory": row.MemoryView, "disk": row.DiskView}
 	entities := map[string]string{"cpu": "CPU", "memory": "Memory", "disk": h.worstMount(row.Host)}
 	for i := range charts {
 		v, ok := readings[charts[i].Resource]
-		if !ok || v == nil {
+		if !ok || v.Value == nil {
 			continue
 		}
-		if state := h.metricReading(charts[i].Resource, v).State; state == "warning" || state == "critical" {
+		if state := v.State; state == "warning" || state == "critical" {
 			charts[i].State, charts[i].Entity = state, entities[charts[i].Resource]
 		}
 	}

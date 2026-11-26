@@ -83,6 +83,10 @@ JSON files override defaults; restart to apply. Unknown keys, multiple JSON valu
 | `discord_webhook_file` | Empty (disabled); optional restricted file containing an HTTPS Discord webhook URL. Applies to every alert category. |
 | `alert_pending_seconds` | `120`; condition transitions must persist this long before notification, including recovery. Range `0`–`86400`. |
 | `backup_jobs` | Empty; expected `{host, job, max_age_seconds}` entries. Hosts must be configured agents; job IDs must be unique per host. |
+| `http_checks` | Empty; hub-side HTTP(S) probes. See [HTTP checks](#http-checks). |
+| `expected_containers` | Empty; `{host, name, severity}` containers that must exist. See [expected containers](#expected-containers). |
+| `heartbeat_url_file`, `heartbeat_seconds` | Empty (disabled), `60`; restricted file with an HTTPS push URL pinged while the hub is healthy. See [hub health](#hub-health-heartbeat-and-self-metrics). |
+| `metrics_token_file` | Empty (disabled); restricted bearer token for `GET /metrics` on the agent listener. Must differ from every agent token. |
 | `future_seconds` | `300`; maximum future sample clock skew |
 | `max_body_bytes` | `2097152`; agent request limit |
 | `max_entities` | `2048` metrics/containers per sample |
@@ -100,7 +104,7 @@ The hub receives observations from agents and evaluates a policy supplied throug
 
 Set `discord_webhook_file` to a separate regular file, mode `0600` or stricter. Its contents must be an HTTPS `discord.com/api/webhooks/...` or `discordapp.com/api/webhooks/...` URL without query parameters. Relative paths resolve against the hub configuration directory. The hub validates the secret at startup and rereads it for delivery; never put the URL into examples, telemetry, browser configuration or logs. Omit the setting to disable notifications without disabling dashboard conditions.
 
-The background worker evaluates configured hosts every 30 seconds, even without a browser. A condition must persist for `alert_pending_seconds` (default 120) before activation, severity-change or recovery delivery. Changing a reading's numeric value does not resend an unchanged severity. Container names provide identity across replacement; missing containers and missing measurements do not prove recovery. A fresh complete state snapshot can clear collection errors. State and retry deadlines persist in SQLite. Restarting the hub does not resend acknowledged alerts. Notifications suppress Discord mentions and bound message size.
+The background worker evaluates configured hosts and HTTP checks every 30 seconds, even without a browser or Discord. A condition must persist for `alert_pending_seconds` (default 120) before activation, severity-change or recovery delivery. The dashboard uses the same timing: a new warning/critical condition shows as **pending** (dashed amber pill, for example `critical if it lasts 2m (40s so far)`) and does not change host health or the fleet summary until it has lasted the pending period. A spike that clears restarts the period. While a condition escalates (warning to critical), the dashboard keeps the confirmed warning until critical is sustained. Set `alert_pending_seconds` to `0` to show breaches immediately. Changing a reading's numeric value does not resend an unchanged severity. Container names provide identity across replacement; missing containers and missing measurements do not prove recovery. A fresh complete state snapshot can clear collection errors. State and retry deadlines persist in SQLite. Restarting the hub does not resend acknowledged alerts. Notifications suppress Discord mentions and bound message size.
 
 Requests time out after eight seconds. Temporary failures back off from 30 seconds to one hour; rate limits honor `Retry-After`, with a shared persistent webhook cooldown. Permanent HTTP rejections retry hourly so a repaired webhook can recover. Delivery is at-least-once: a crash after Discord accepts a message but before SQLite records its acknowledgement can duplicate that message. Conditions that clear before any activation is delivered do not send a recovery-only notification. A continuously unavailable webhook can coalesce intermediate state changes into the latest condition.
 
@@ -133,10 +137,61 @@ Example hub configuration fragment (replace the example host/container names):
 ```
 
 - **Defaults:** each resource warns at **≥80%** and becomes critical at **≥90%**. All three container severities default to `warning`. Partial configuration retains unspecified defaults, including individual thresholds. Resources require finite `0 <= warning < critical <= 100`; severity values must be `warning` or `critical`. Unknown fields and invalid rules fail startup.
+- **Restart loops:** `containers.restart_loop` (default `{"restarts":3,"window_seconds":600,"severity":"warning"}`) flags a container whose Docker restart count rose by at least `restarts` within the window, for example `worker restarted 4× in 10m`. It compares the current count with the earliest stored container snapshot inside the window, by container ID: containers created inside the window count from zero and recreated containers start over. Only fresh state is judged. `restarts: 0` disables it. The window must fit within `raw_hours`. A `container_overrides` entry may set `restart_loop` for one container (lifecycle is then optional); a zero window or empty severity inherits the global rule, and `restarts: 0` disables it for that container. The condition clears once the window no longer contains enough restarts.
+- **Disk forecast:** `resources.disk.forecast` (default `{"days":7,"window_hours":72,"severity":"warning"}`) fits a least-squares line to each disk-health mount's used bytes (summary buckets over `window_hours`) and raises `Disk forecast` when that line reaches capacity within `days`, for example `/ full in about 3.0 days at 10.0 GiB/day`. It needs at least 24 hours of history and a fresh host; flat or shrinking usage is healthy. It respects `disk_health_mountpoints`. `days: 0` disables it; `window_hours` is 24–8760 and must fit within `summary_days`. A linear trend cannot predict sudden bulk writes.
 - **Container rules:** `stopped` applies to any state other than `running`; running containers use `unhealthy` or `starting` when Docker reports that health status. Running containers without a health check have no container condition. Collection errors remain warnings; missing/stale readings remain unavailable independently of policy.
 - **One-shot precedence:** an override matches an exact stable **host ID**, not its display name, and exact container name (without Docker's leading `/`). Both are required; duplicate host/name rules are rejected, and at most 2,048 rules are allowed. Only `oneshot` lifecycle is supported. A matching `exited` container with a known exit code of **0** is healthy; a nonzero exit uses `failure`, which defaults to the configured `stopped` severity. The override does not suppress unhealthy running containers, unstarted jobs, or unknown exit codes. Other hosts/containers use the global rules. An absent/deleted container is not detected as a missing expected service.
 - **Observations stay intact:** policy changes do not delete containers, change application data, or rewrite stored history. Charts use the current policy, including for historical readings. Exit codes are optional observations; old samples and failed/missing inspection fields remain unknown, never assumed successful.
 - **Upgrade hub first, then agents.** Older hubs reject the new `exit_code` sample field. The upgraded hub accepts older agents and existing SQLite data without a migration; one-shot successes remain warnings until an upgraded agent supplies a known successful exit code. Restart the hub to apply policy changes; there is no live reload. For rollback, downgrade agents before the hub and remove unsupported configuration fields.
+
+### HTTP checks
+
+`http_checks` lists probes the hub runs itself, so they test reachability **from the hub**, for example through Traefik:
+
+```json
+{"http_checks": [
+  {"name": "traefik", "url": "https://example.com/ping"},
+  {"name": "immich", "url": "http://immich:2283/api/server/ping", "expect_status": [200], "interval_seconds": 30}
+]}
+```
+
+| Field | Default / meaning |
+| --- | --- |
+| `name` | Required unique identifier (host ID rules) |
+| `url` | Required `http` or `https` URL, no credentials or fragment. Never shown in the UI, logs or Discord. |
+| `interval_seconds`, `timeout_seconds` | `60` (10–3600), `10` (1–60, below the interval) |
+| `expect_status` | Empty: any 2xx/3xx passes. Otherwise up to 16 exact codes. |
+| `follow_redirects` | `false`: a redirect response is judged itself |
+| `tls_warn_days`, `tls_critical_days` | `14`, `3`; certificate expiry thresholds for HTTPS. `0` disables that threshold. |
+| `severity` | `critical`; state of a failed probe |
+
+Each probe sends `GET` with certificate verification, discards the body and records status, latency and the leaf certificate's expiry. Failures are reported generically (`timed out`, `connection failed`, `TLS verification failed`, `unexpected status 503`). Conditions `HTTP check` and `TLS certificate` appear in **Needs attention**, the fleet summary and a **HTTP checks** table on **Alerts & Hosts**, and use the same pending period and Discord delivery as host conditions. Results live in memory: after a restart each check reports again after its first probe, and a result older than three intervals is dropped rather than shown as healthy.
+
+### Expected containers
+
+`expected_containers`, for example `[{"host":"gateway","name":"traefik"}]`, declares containers that must exist on a configured host. `severity` is `warning` or `critical` (default `critical`); host/name pairs must be unique and the host must be a configured agent. When a **fresh** container snapshot lacks that exact name (without Docker's leading `/`), the host gets the condition `traefik: missing`, which drives dashboard health and Discord like any container condition. Stale snapshots prove nothing, so an offline host reports unavailable contact rather than missing containers. Once the container reappears its normal state applies and a recovery is sent.
+
+### Hub health, heartbeat and self-metrics
+
+`GET /healthz` on the UI listener needs no authentication. It returns `200 ok` when the database answers and no hub subsystem (agent registration, ingestion, notifications, maintenance) reports a problem, otherwise `503 degraded`. It never reveals details; use it for container health checks or a local watchdog. Behind a forward-auth proxy, call it on the private network rather than through the public route.
+
+`heartbeat_url_file` is a dead-man's switch for the hub's own outage. Put an HTTPS push URL (for example healthchecks.io or an Uptime Kuma push monitor; query parameters are allowed) in a separate `0600` file. Every `heartbeat_seconds` (10–3600, default 60) the hub sends `GET` to that URL, **only while `/healthz` would return 200**. Configure the external service to alert when pings stop: that covers a crashed, hung or degraded hub, including broken Discord delivery. The URL is validated at startup, reread for each ping and never logged.
+
+`metrics_token_file` enables `GET /metrics` on the private agent listener in the Prometheus text format. Scrapers send `Authorization: Bearer <token>`; no `X-Host-ID` is needed. The token must differ from every agent credential and cannot submit agent data. Exposed series:
+
+| Metric | Meaning |
+| --- | --- |
+| `keiryo_up` | 1 when `/healthz` would return 200 |
+| `keiryo_ingest_total{endpoint,result}` | Agent requests to `samples`, `otlp`, `state` that were `accepted`, `invalid` or hit a storage `error` |
+| `keiryo_agent_rejected_total{reason}` | Requests rejected as `unauthorized` or `busy` |
+| `keiryo_otlp_points_rejected_total` | OTLP points reported as partial-success rejections |
+| `keiryo_notifications_total{result}` | Discord deliveries `sent` or `failed` |
+| `keiryo_db_size_bytes` | SQLite database plus WAL size |
+| `keiryo_retention_backlog_seconds` | How far the oldest raw row is past retention; nonzero for long means cleanup is falling behind |
+| `keiryo_maintenance_duration_seconds`, `keiryo_maintenance_last_success_timestamp_seconds` | Latest retention pass |
+| `keiryo_hosts{health}` | Hosts (first 1,000) by dashboard health |
+
+Counters reset when the hub restarts.
 
 ### Agent fields
 
@@ -222,7 +277,7 @@ Run the opt-in real Collector check from this repository root with `uv run --loc
 - Container state, Docker health status when present, exit code for exited containers (or explicitly unknown), restart count, collection errors and agent version appear in the latest snapshot. Raw state/error observations are also retained; five-minute state summaries keep the last observation in each bucket, not every transition. Numeric histories retain raw observations and weighted summaries with min/max/sample counts; missing observations are not filled in.
 - Log requests fetch a recent snapshot, not a live tail. Log rotation, unsupported Docker logging drivers, stopped/deleted containers or an offline agent may make logs unavailable. Logs are escaped, bounded, and not written to SQLite or application logs.
 - The fleet navigation opens separate, bookmarkable views (`?view=overview`, `resources`, `metrics`, or `conditions`), preserving the time range, host filter and host-page offset. Only the selected view is rendered; `/` defaults to **Fleet Overview**.
-- **Fleet Overview** provides threshold totals, a condition map, worst-first host readings and CPU sparklines. **Resource Views** adds a peak-CPU heatmap, host-memory treemap (box size = total RAM; colour = usage), and average CPU comparison. **Fleet Metrics** shows fullest filesystems and top CPU/memory/network consumers; network rankings sum received and transmitted bytes/s across collected interfaces. **Alerts & Hosts** shows current threshold, contact, collection and container conditions, not a persistent alert lifecycle. There are no acknowledgements, alert notifications, forecasts or hypervisor/VM relationships.
+- **Fleet Overview** provides threshold totals, a condition map, worst-first host readings and CPU sparklines. **Resource Views** adds a peak-CPU heatmap, host-memory treemap (box size = total RAM; colour = usage), and average CPU comparison. **Fleet Metrics** shows fullest filesystems and top CPU/memory/network consumers; network rankings sum received and transmitted bytes/s across collected interfaces. **Alerts & Hosts** shows current threshold, contact, collection and container conditions, not a persistent alert lifecycle, plus HTTP check results. New warning/critical conditions show as pending until they last `alert_pending_seconds`. There are no acknowledgements or hypervisor/VM relationships.
 - Host CPU, memory and worst-filesystem readings use the configured `alert_policy` thresholds (default warning **≥80%**, critical **≥90%**). Disk health considers all mounts unless `disk_health_mountpoints` selects specific mounts; no valid selected reading means unavailable, never a fallback to excluded mounts. Stale contact or old measurements make the host unavailable; missing metrics do not become zero or healthy. Known warning/critical readings still surface when another metric is missing. Container conditions use observed state/health and one-shot exit codes, not host CPU thresholds (container CPU can exceed 100%). Rankings and memory treemaps exclude stale readings. Historical filesystem readings remain visible with a last-received warning.
 - Fleet totals, filters, charts and rankings cover the current page of up to 100 hosts, not unseen pages. CPU history uses weighted summary averages and bucket peaks, aggregated to about 48 time bins per host (at least one configured summary bucket). Missing buckets remain blank. Hover heatmap cells for both peak and average. Open a host for full CPU/memory/disk, network and container charts, raw metrics, state observations and on-demand logs.
 - Charts use locally embedded Apache ECharts with no CDN or frontend framework. Drag/scroll to zoom; use series buttons to hide/show lines. Keyboard users can focus line charts and use arrow keys/Home/End to inspect readings. Tables provide equivalent readings, including an expandable fleet CPU table. Axes use browser-local time; history tables retain UTC. Memory/disk percentages use matching timestamps and entities; summary percentages are ratios of bucket averages. Missing or zero denominators produce no reading.
@@ -237,7 +292,7 @@ Allow streaming `GET /events` on the same authenticated UI origin, without respo
 
 **Proxy mode** requires a trusted remote proxy IP and `X-authentik-username`. Supply the exact proxy IP as `/32` (IPv4) or `/128` (IPv6), not an entire shared Docker subnet. The application does not verify an Authentik JWT; it relies on that protected network hop. The proxy must authenticate users, overwrite client identity headers, and be the only trusted source. Never publish the UI port directly. If the proxy IP changes, update configuration; failure is closed. Browser mutations require same-origin protection. The agent listener ignores proxy user identity and requires its own host-bound bearer token.
 
-**Local mode** has a single admin account, salted password hash, rate-limited login, CSRF protection, opaque expiring sessions and restrictive cookies. Bootstrap requires a **loopback UI binding and loopback `public_url`**. Initialize locally (or through an SSH tunnel), then change the binding/HTTPS URL and restart for remote access. This prevents a public reverse proxy from exposing bootstrap through a private socket peer. There is no registration, email recovery, or password-reset endpoint. Keep a secure database backup; offline recovery is an operator procedure, not a public bypass.
+**Local mode** has a single admin account, salted password hash, rate-limited login, CSRF protection, opaque expiring sessions and restrictive cookies. Bootstrap requires a **loopback UI binding and loopback `public_url`**. Initialize locally (or through an SSH tunnel), then change the binding/HTTPS URL and restart for remote access. This prevents a public reverse proxy from exposing bootstrap through a private socket peer. After bootstrap, changing the password requires the current password and shares the login rate limit. There is no registration, email recovery, or password-reset endpoint. Keep a secure database backup; offline recovery is an operator procedure, not a public bypass.
 
 **Docker access is privileged in effect.** A read-only bind of the Docker socket does not prevent API mutations by a compromised process. This app only implements required read calls, but root socket access still means host-root risk. The agent also reads host filesystems for host metrics. Do not deploy on machines where that trust is unacceptable.
 
@@ -293,7 +348,7 @@ The fleet harness includes bearer authentication, JSON validation, 18 metrics/sa
 
 ## Storage, backups and limits
 
-SQLite uses WAL, serialized writes, indexed bounded history reads, transactional acknowledgements and upload deduplication. Summaries update in the same transaction as raw samples, so retries cannot count twice. Delayed samples older than raw retention are rejected. Cleanup is incremental; large backlogs may need repeated passes. The storage target prunes oldest retained data under pressure and requires spare disk for WAL/index/freelist overhead; it is not a hard filesystem quota. Freed SQLite pages can remain in the database file for reuse.
+SQLite uses WAL, serialized writes, indexed bounded history reads, transactional acknowledgements and upload deduplication. Summaries update in the same transaction as raw samples, so retries cannot count twice. Delayed samples older than raw retention are rejected. Cleanup runs every minute in bounded chunks and repeats them until the backlog is drained or a 10-second budget is spent; any remainder carries over to the next pass. The storage target prunes oldest retained data under pressure and requires spare disk for WAL/index/freelist overhead; it is not a hard filesystem quota. Freed SQLite pages can remain in the database file for reuse.
 
 For a simple safe backup: stop the hub cleanly, copy its **entire data directory** including any WAL/SHM files, then restart it. Do not copy just the main `.db` from a running hub. Alternatively use SQLite's online backup API with appropriate tooling outside this application. Test restoring to an isolated hub before relying on backups. Configuration and credential files need their own secure backup. Restore file ownership/permissions and use a compatible application/schema version.
 

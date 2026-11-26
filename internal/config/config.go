@@ -18,31 +18,36 @@ import (
 )
 
 type Hub struct {
-	UIListen              string            `json:"ui_listen"`
-	AgentListen           string            `json:"agent_listen"`
-	Database              string            `json:"database"`
-	AuthMode              string            `json:"auth_mode"`
-	TrustedProxies        []string          `json:"trusted_proxies"`
-	PublicURL             string            `json:"public_url"`
-	Agents                map[string]string `json:"agents"`
-	RawHours              int               `json:"raw_hours"`
-	SummaryDays           int               `json:"summary_days"`
-	BucketSeconds         int               `json:"bucket_seconds"`
-	StaleSeconds          int               `json:"stale_seconds"`
-	OfflineSeconds        int               `json:"offline_seconds"`
-	FutureSeconds         int               `json:"future_seconds"`
-	MaxBodyBytes          int64             `json:"max_body_bytes"`
-	MaxEntities           int               `json:"max_entities"`
-	MaxRequests           int               `json:"max_requests"`
-	LogLines              int               `json:"log_lines"`
-	LogBytes              int               `json:"log_bytes"`
-	LogTimeoutSeconds     int               `json:"log_timeout_seconds"`
-	LogQueue              int               `json:"log_queue"`
-	DiskHealthMountpoints []string          `json:"disk_health_mountpoints"`
-	AlertPolicy           AlertPolicy       `json:"alert_policy"`
-	DiscordWebhookFile    string            `json:"discord_webhook_file,omitempty"`
-	AlertPendingSeconds   int               `json:"alert_pending_seconds"`
-	BackupJobs            []BackupJob       `json:"backup_jobs,omitempty"`
+	UIListen              string              `json:"ui_listen"`
+	AgentListen           string              `json:"agent_listen"`
+	Database              string              `json:"database"`
+	AuthMode              string              `json:"auth_mode"`
+	TrustedProxies        []string            `json:"trusted_proxies"`
+	PublicURL             string              `json:"public_url"`
+	Agents                map[string]string   `json:"agents"`
+	RawHours              int                 `json:"raw_hours"`
+	SummaryDays           int                 `json:"summary_days"`
+	BucketSeconds         int                 `json:"bucket_seconds"`
+	StaleSeconds          int                 `json:"stale_seconds"`
+	OfflineSeconds        int                 `json:"offline_seconds"`
+	FutureSeconds         int                 `json:"future_seconds"`
+	MaxBodyBytes          int64               `json:"max_body_bytes"`
+	MaxEntities           int                 `json:"max_entities"`
+	MaxRequests           int                 `json:"max_requests"`
+	LogLines              int                 `json:"log_lines"`
+	LogBytes              int                 `json:"log_bytes"`
+	LogTimeoutSeconds     int                 `json:"log_timeout_seconds"`
+	LogQueue              int                 `json:"log_queue"`
+	DiskHealthMountpoints []string            `json:"disk_health_mountpoints"`
+	AlertPolicy           AlertPolicy         `json:"alert_policy"`
+	DiscordWebhookFile    string              `json:"discord_webhook_file,omitempty"`
+	AlertPendingSeconds   int                 `json:"alert_pending_seconds"`
+	BackupJobs            []BackupJob         `json:"backup_jobs,omitempty"`
+	ExpectedContainers    []ExpectedContainer `json:"expected_containers,omitempty"`
+	HTTPChecks            []HTTPCheck         `json:"http_checks,omitempty"`
+	MetricsTokenFile      string              `json:"metrics_token_file,omitempty"`
+	HeartbeatURLFile      string              `json:"heartbeat_url_file,omitempty"`
+	HeartbeatSeconds      int                 `json:"heartbeat_seconds"`
 }
 
 type Agent struct {
@@ -63,7 +68,7 @@ type Agent struct {
 }
 
 func DefaultHub() Hub {
-	return Hub{UIListen: "127.0.0.1:9080", AgentListen: "127.0.0.1:9081", Database: "monitoring.db", AuthMode: "local", PublicURL: "http://127.0.0.1:9080", Agents: map[string]string{}, RawHours: 24, SummaryDays: 30, BucketSeconds: 300, StaleSeconds: 180, OfflineSeconds: 300, FutureSeconds: 300, MaxBodyBytes: 2 << 20, MaxEntities: 2048, MaxRequests: 32, LogLines: 200, LogBytes: 256 << 10, LogTimeoutSeconds: 15, LogQueue: 32, AlertPolicy: defaultAlertPolicy(), AlertPendingSeconds: 120}
+	return Hub{UIListen: "127.0.0.1:9080", AgentListen: "127.0.0.1:9081", Database: "monitoring.db", AuthMode: "local", PublicURL: "http://127.0.0.1:9080", Agents: map[string]string{}, RawHours: 24, SummaryDays: 30, BucketSeconds: 300, StaleSeconds: 180, OfflineSeconds: 300, FutureSeconds: 300, MaxBodyBytes: 2 << 20, MaxEntities: 2048, MaxRequests: 32, LogLines: 200, LogBytes: 256 << 10, LogTimeoutSeconds: 15, LogQueue: 32, AlertPolicy: defaultAlertPolicy(), AlertPendingSeconds: 120, HeartbeatSeconds: 60}
 }
 func DefaultAgent() Agent {
 	return Agent{IntervalSeconds: 60, BufferSamples: 60, PollSeconds: 5, DockerSocket: "/var/run/docker.sock", ExcludeInterfaces: []string{"lo"}, LogBytes: 256 << 10, LogLines: 200, LogTimeoutSeconds: 15}
@@ -113,14 +118,36 @@ func LoadHub(path string) (Hub, error) {
 	if err := c.ValidateBackupJobs(); err != nil {
 		return c, err
 	}
+	if err := c.ValidateExpectedContainers(); err != nil {
+		return c, err
+	}
+	if err := c.ValidateHTTPChecks(); err != nil {
+		return c, err
+	}
 	if c.AlertPendingSeconds < 0 || c.AlertPendingSeconds > 86400 {
 		return c, errors.New("alert_pending_seconds must be between 0 and 86400")
 	}
+	if c.HeartbeatSeconds < 10 || c.HeartbeatSeconds > 3600 {
+		return c, errors.New("heartbeat_seconds must be between 10 and 3600")
+	}
 	c.DiscordWebhookFile = relative(path, c.DiscordWebhookFile)
+	c.HeartbeatURLFile = relative(path, c.HeartbeatURLFile)
+	c.MetricsTokenFile = relative(path, c.MetricsTokenFile)
 	for _, mount := range c.DiskHealthMountpoints {
 		if !pathpkg.IsAbs(mount) || pathpkg.Clean(mount) != mount {
 			return c, errors.New("disk_health_mountpoints requires clean absolute mountpoints")
 		}
+	}
+	for _, rule := range c.AlertPolicy.ContainerOverrides {
+		if rule.RestartLoop != nil && rule.RestartLoop.WindowSeconds > c.RawHours*3600 {
+			return c, errors.New("restart_loop window_seconds must not exceed raw_hours")
+		}
+	}
+	if c.AlertPolicy.Resources.Disk.Forecast.WindowHours > c.SummaryDays*24 {
+		return c, errors.New("disk forecast window_hours must not exceed summary_days")
+	}
+	if c.AlertPolicy.Containers.RestartLoop.WindowSeconds > c.RawHours*3600 {
+		return c, errors.New("restart_loop window_seconds must not exceed raw_hours")
 	}
 	if c.RawHours < 1 || c.RawHours > 8760 || c.SummaryDays < 1 || c.SummaryDays > 3650 || c.SummaryDays*24 < c.RawHours || c.BucketSeconds < 60 || c.BucketSeconds > 3600 || c.RawHours*3600%c.BucketSeconds != 0 {
 		return c, errors.New("invalid retention durations")

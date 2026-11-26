@@ -53,12 +53,12 @@ func TestDashboardMetricsAndRendering(t *testing.T) {
 	}
 	h := testHub(t, "proxy")
 	host.Seen = now
-	stats := h.hostStats(host)
+	stats := h.hostStats(h.fleetRow(host))
 	want := []statView{{"CPU", "25.0%", "healthy"}, {"Memory", "30.0%", "healthy"}, {"Disk /", "75.0%", "healthy"}, {"Containers", "1 running", ""}}
 	if !reflect.DeepEqual(stats, want) {
 		t.Fatalf("incorrect overview: %+v", stats)
 	}
-	if h.hostStats(store.Host{})[0].Value != "Unavailable" {
+	if h.hostStats(h.fleetRow(store.Host{}))[0].Value != "Unavailable" {
 		t.Fatal("missing reading rendered as zero")
 	}
 	if gap := chartGap([]store.Point{{At: now}, {At: now.Add(time.Minute)}, {At: now.Add(3 * time.Minute)}}, false, 300, 180); gap != 90000 {
@@ -131,12 +131,12 @@ func TestHostStatsWorstMount(t *testing.T) {
 		{Name: "filesystem_total_bytes", Entity: "/", Value: 100}, {Name: "filesystem_free_bytes", Entity: "/", Value: 80},
 		{Name: "filesystem_total_bytes", Entity: "/data", Value: 100}, {Name: "filesystem_free_bytes", Entity: "/data", Value: 5},
 	}}}
-	stats := h.hostStats(host)
+	stats := h.hostStats(h.fleetRow(host))
 	if stats[2] != (statView{"Disk /data", "95.0%", "critical"}) || stats[3].Value != "1 running · 2 other" {
 		t.Fatalf("stats %+v", stats)
 	}
 	host.Sample.At, host.Seen = now.Add(-time.Hour), now.Add(-time.Hour)
-	if s := h.hostStats(host); s[0].State != "" || s[2].State != "" {
+	if s := h.hostStats(h.fleetRow(host)); s[0].State != "" || s[2].State != "" {
 		t.Fatalf("stale readings coloured as current: %+v", s)
 	}
 }
@@ -149,6 +149,7 @@ func TestProblemChartFirst(t *testing.T) {
 	}{{"fresh", time.Second, true}, {"stale", time.Hour, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := testHub(t, "proxy")
+			h.config.AlertPendingSeconds = 0 // chart ordering, not sustain timing
 			at := time.Now().Add(-tc.age)
 			s := protocol.Sample{Version: 1, HostID: "node", ID: "p", At: at, Metrics: []protocol.Metric{
 				{Name: "cpu_percent", Value: 95, Weight: 1}, {Name: "memory_used_bytes", Value: 20, Weight: 1}, {Name: "memory_total_bytes", Value: 100, Weight: 1},

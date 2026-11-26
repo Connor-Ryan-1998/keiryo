@@ -2,11 +2,11 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"selfRequestsOnly":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
-<title>keiryō · lightweight monitoring</title><link rel="icon" type="image/svg+xml" href="/static/keiryo.svg"><link rel="icon" type="image/png" sizes="32x32" href="/static/keiryo-32.png"><link rel="stylesheet" href="/static/style.css">
-<script src="/static/htmx.min.js" defer></script>
-<script src="/static/echarts.min.js" defer></script>
-<script src="/static/dashboard.js" defer></script>
-</head><body><header><a href="/"><img src="/static/keiryo.svg" width="32" height="32" alt="">keiryō</a></header><main>
+<title>keiryō · lightweight monitoring</title><link rel="icon" type="image/svg+xml" href="{{asset "keiryo.svg"}}"><link rel="icon" type="image/png" sizes="32x32" href="{{asset "keiryo-32.png"}}"><link rel="stylesheet" href="{{asset "style.css"}}">
+<script src="{{asset "htmx.min.js"}}" defer></script>
+<script src="{{asset "echarts.min.js"}}" defer></script>
+<script src="{{asset "dashboard.js"}}" defer></script>
+</head><body><header><a href="/"><img src="{{asset "keiryo.svg"}}" width="32" height="32" alt="">keiryō</a></header><main>
 {{end}}
 {{define "foot"}}</main></body></html>{{end}}
 
@@ -22,6 +22,7 @@
 {{define "password"}}{{template "head"}}
 <div class="auth"><h1>Set a new password</h1><form method="post" action="/password">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
+{{if .Current}}<label>Current password <input name="current" type="password" maxlength="72" autocomplete="current-password" required></label>{{end}}
 <label>New password (6–72 bytes, including at least one punctuation or symbol character) <input name="password" type="password" minlength="6" maxlength="72" autocomplete="new-password" required></label>
 <button>Save and sign in again</button></form></div>
 {{template "foot"}}{{end}}
@@ -31,7 +32,7 @@
 {{end}}{{end}}
 
 {{/* Health pill: state always carries text, never colour alone. */}}
-{{define "health"}}<span class="pill {{.}}">{{if eq . "healthy"}}✓ Normal{{else if eq . "warning"}}! Warning{{else if eq . "critical"}}! Critical{{else}}? No data{{end}}</span>{{end}}
+{{define "health"}}<span class="pill {{.}}">{{if eq . "healthy"}}✓ Normal{{else if eq . "warning"}}! Warning{{else if eq . "critical"}}! Critical{{else if eq . "pending"}}… Pending{{else}}? No data{{end}}</span>{{end}}
 {{/* Contact pill: only rendered when the agent is not connected. */}}
 {{define "contact"}}{{if ne . "connected"}}<span class="pill contact {{.}}">{{.}}</span>{{end}}{{end}}
 {{define "ago"}}{{if .IsZero}}<span class="muted">Never</span>{{else}}<time datetime="{{iso .}}" data-format="relative" title="{{stamp .}}">{{stamp .}}</time>{{end}}{{end}}
@@ -58,7 +59,7 @@
 <p class="summary">{{.Summary}}</p>
 <div class="host-cards" role="region" aria-label="All monitored hosts">{{range .Cards}}<a class="host-card {{.Health}}" href="/hosts/{{.ID}}"><span class="host-card-top"><strong>{{template "hostname" .}}</strong>{{template "health" .Health}}</span><span class="host-card-detail">{{if .Reason}}{{.Reason}}{{else}}CPU {{reading .CPU}}% · Memory {{reading .Memory}}%{{end}}</span><small>Last reading {{template "ago" .Sample.At}}</small></a>{{end}}</section>
 {{if .Attention}}<article class="attention" aria-labelledby="attention-title"><div class="card-heading"><h2 id="attention-title">Needs attention <span class="count">{{len .Attention}}</span></h2><span class="muted">Based on latest readings</span></div>
-{{range .Attention}}<div class="attention-row">{{template "health" .State}}<div><h3>{{.Name}} · {{.Kind}}</h3><p>{{.Detail}}</p></div><a class="action" href="/hosts/{{.Host}}">Inspect {{.Name}} →</a></div>{{end}}</article>{{end}}
+{{range .Attention}}<div class="attention-row">{{template "health" .State}}<div><h3>{{.Name}} · {{.Kind}}</h3><p>{{.Detail}}</p></div><a class="action" href="{{if .Link}}{{.Link}}{{else}}/hosts/{{.Host}}{{end}}">Inspect {{.Name}} →</a></div>{{end}}</article>{{end}}
 <article><div class="card-heading"><h2>Latest host readings</h2><span class="muted">{{if .Query}}{{len .Hosts}} of {{.Total}} hosts match the filter{{else}}Worst first{{end}}</span></div><div class="table readings"><table><thead><tr><th scope="col">Host</th><th scope="col">CPU</th><th scope="col">Memory</th><th scope="col">Worst disk</th><th scope="col">CPU history</th><th scope="col">Uptime</th><th scope="col">Last reading</th></tr></thead><tbody>
 {{range .Hosts}}<tr data-host="{{.ID}}"><th scope="row"><a href="/hosts/{{.ID}}">{{template "hostname" .}}</a>{{if ne .Health "healthy"}}<br>{{template "health" .Health}}{{end}}</th><td>{{template "percent" .CPUView}}</td><td>{{template "percent" .MemoryView}}</td><td>{{template "percent" .DiskView}}</td><td><div class="spark chart-panel" data-title="CPU {{.ID}}" data-kind="spark" data-resource="cpu" data-series="{{index $.Sparks .ID}}" data-unit="%" data-percent="true"><div class="plot"></div></div></td><td>{{.Uptime}}</td><td>{{template "ago" .Sample.At}}{{if ne .Status "connected"}}<br>{{template "contact" .Status}}{{end}}</td></tr>{{else}}<tr><td colspan="7">No matching hosts on this page.</td></tr>{{end}}
 </tbody></table></div></article></section>
@@ -70,7 +71,7 @@
 <section id="metrics"><article><div class="card-heading"><h2>Filesystems · fullest first</h2><span class="muted">Last received readings</span></div><div class="table"><table><thead><tr><th scope="col">Host</th><th scope="col">Mount</th><th scope="col">Used</th><th scope="col">Total</th><th scope="col">Usage</th></tr></thead><tbody>{{range .Volumes}}<tr><td><a href="/hosts/{{.Host}}">{{.Name}}</a></td><td>{{.Mount}}</td><td>{{bytes .Used}}</td><td>{{bytes .Total}}</td><td><meter class="{{.State}}" min="0" max="100" value="{{.Percent}}">{{printf "%.1f" .Percent}}%</meter> <span class="{{.State}}">{{printf "%.1f" .Percent}}%</span></td></tr>{{else}}<tr><td colspan="5">No valid filesystem readings.</td></tr>{{end}}</tbody></table></div></article>
 <div class="rank-grid">{{range $metric,$rows := .Ranks}}<article><h2>Top {{$metric}}</h2><p class="muted">Fresh readings only{{if eq $metric "Network"}} · receive + transmit{{end}}</p><ol class="rank-list">{{range $rows}}<li><a href="/hosts/{{.ID}}">{{template "hostname" .}}</a><strong>{{if eq $metric "CPU"}}{{reading .CPU}}%{{else if eq $metric "Memory"}}{{reading .Memory}}%{{else}}{{rate .Network}}{{end}}</strong></li>{{else}}<li>No available readings.</li>{{end}}</ol></article>{{end}}</div></section>
 {{end}}{{if eq .View "conditions"}}
-<section id="conditions"><p class="muted">Current problems are listed on <a href="?view=overview&amp;offset={{.Offset}}&amp;range={{.Range}}&amp;q={{.Query}}#attention-title">Fleet Overview</a>.</p><div class="host-grid">{{range .Hosts}}{{$host := .ID}}<article><div class="card-heading"><h2><a href="/hosts/{{.ID}}">{{template "hostname" .}}</a></h2><span>{{template "health" .Health}} {{template "contact" .Status}}</span></div><p class="muted">{{len .Sample.Containers}} containers · agent {{.Sample.AgentVersion}} · last contact {{template "ago" .Seen}}</p>
+<section id="conditions">{{if .Checks}}<article id="checks"><div class="card-heading"><h2>HTTP checks</h2><span class="muted">Probed by the hub</span></div><div class="table"><table><thead><tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th><th scope="col">Last checked</th></tr></thead><tbody>{{range .Checks}}<tr><th scope="row">{{.Name}}</th><td>{{template "health" .State}}</td><td>{{range .Details}}<p>{{.}}</p>{{end}}</td><td>{{template "ago" .At}}</td></tr>{{end}}</tbody></table></div></article>{{end}}<p class="muted">Current problems are listed on <a href="?view=overview&amp;offset={{.Offset}}&amp;range={{.Range}}&amp;q={{.Query}}#attention-title">Fleet Overview</a>.</p><div class="host-grid">{{range .Hosts}}{{$host := .ID}}<article><div class="card-heading"><h2><a href="/hosts/{{.ID}}">{{template "hostname" .}}</a></h2><span>{{template "health" .Health}} {{template "contact" .Status}}</span></div><p class="muted">{{len .Sample.Containers}} containers · agent {{.Sample.AgentVersion}} · last contact {{template "ago" .Seen}}</p>
 {{range .Signals}}{{if eq .Kind "Backup"}}<p><span class="pill {{.State}}">Backup · {{.State}}</span> {{.Detail}}</p>{{end}}{{end}}
 <div class="container-list">{{range .Sample.Containers}}<span class="container-chip {{containerState $host .}}">{{containerDetail .}} · {{.Restarts}} restarts</span>{{else}}<span class="muted">No container observations.</span>{{end}}</div></article>{{else}}<p>No matching hosts on this page.</p>{{end}}</div></section>
 {{end}}</div>
@@ -84,7 +85,7 @@
 <nav aria-label="Fleet pages">{{if .Offset}}<a href="?view={{.View}}&amp;offset={{.Previous}}&amp;range={{.Range}}&amp;q={{.Query}}">Previous</a>{{end}} {{if .More}}<a href="?view={{.View}}&amp;offset={{.Next}}&amp;range={{.Range}}&amp;q={{.Query}}">Next</a>{{end}}</nav>
 {{template "foot"}}{{end}}
 
-{{define "percent"}}{{if ne .Value nil}}<meter class="{{.State}}" min="0" max="100" value="{{.Value}}">{{reading .Value}}%</meter> <span class="{{.State}}">{{reading .Value}}%{{if eq .State "critical"}} · Critical{{else if eq .State "warning"}} · Warning{{end}}</span>{{else}}<span class="muted">Unavailable</span>{{end}}{{end}}
+{{define "percent"}}{{if ne .Value nil}}<meter class="{{.State}}" min="0" max="100" value="{{.Value}}">{{reading .Value}}%</meter> <span class="{{.State}}">{{reading .Value}}%{{if eq .State "critical"}} · Critical{{else if eq .State "warning"}} · Warning{{else if eq .State "pending"}} · Pending{{end}}</span>{{else}}<span class="muted">Unavailable</span>{{end}}{{end}}
 
 {{define "host"}}{{template "head"}}
 <div class="page-heading"><div><p class="eyebrow"><a href="/">Fleet</a> / Host dashboard</p><h1>{{template "hostname" .Host}}</h1></div>{{template "logout" .}}</div>

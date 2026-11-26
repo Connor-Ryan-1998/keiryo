@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"houselab/monitoring/internal/config"
+	"houselab/monitoring/internal/protocol"
 	"houselab/monitoring/internal/store"
 	"net/http"
 	"slices"
@@ -13,7 +14,8 @@ import (
 	"time"
 )
 
-type condition struct{ Host, Name, Kind, State, Detail, Key string }
+// condition is one evaluated signal. Link overrides the default host page link.
+type condition struct{ Host, Name, Kind, State, Detail, Key, Link string }
 type volumeView struct {
 	Host, Name, Mount string
 	Used, Total       float64
@@ -32,6 +34,7 @@ type fleetHost struct {
 	Reason                        string
 	Conditions                    []condition
 	Signals                       []condition
+	missing                       bool
 }
 type fleetChart struct{ Title, Kind, Unit, Data, Resource string }
 
@@ -62,7 +65,7 @@ func rate(v float64) string {
 
 // fleetSummary is the one-line answer to "is anything wrong?"; it never claims all clear
 // while the hub is degraded or any host lacks fresh data.
-func fleetSummary(counts map[string]int, total int, more bool, degraded string) string {
+func fleetSummary(counts map[string]int, total int, more bool, degraded string, failingChecks int) string {
 	plural := func(n int, one, many string) string {
 		if n == 1 {
 			return fmt.Sprintf("%d %s", n, one)
@@ -74,9 +77,9 @@ func fleetSummary(counts map[string]int, total int, more bool, degraded string) 
 	switch {
 	case total == 0:
 		out = "No hosts have reported yet"
-	case problems == 0 && missing == 0 && degraded == "":
+	case problems == 0 && missing == 0 && failingChecks == 0 && degraded == "":
 		out = "All " + plural(total, "host is", "hosts are") + " reporting within thresholds"
-	case problems == 0 && missing == 0:
+	case problems == 0 && missing == 0 && failingChecks == 0:
 		out = "The hub reports a problem, so host readings may be incomplete"
 	default:
 		parts := []string{}
@@ -85,6 +88,9 @@ func fleetSummary(counts map[string]int, total int, more bool, degraded string) 
 		}
 		if missing > 0 {
 			parts = append(parts, plural(missing, "host", "hosts")+" with no current data")
+		}
+		if failingChecks > 0 {
+			parts = append(parts, plural(failingChecks, "check", "checks")+" failing")
 		}
 		out = strings.Join(parts, " · ")
 	}
@@ -141,6 +147,9 @@ func (row fleetHost) primaryReason() string {
 	if best == nil {
 		return ""
 	}
+	if best.State == "pending" {
+		return best.Kind + " pending: " + best.Detail
+	}
 	switch best.Kind {
 	case "CPU", "Memory", "Disk":
 		if best.State == "unavailable" {
@@ -167,6 +176,8 @@ func severity(s string) int {
 		return 3
 	case "warning":
 		return 2
+	case "pending":
+		return 1
 	default:
 		return 0
 	}
@@ -263,14 +274,7 @@ func (h *Hub) fleetRow(host store.Host) fleetHost {
 		if state == "unavailable" {
 			missing = true
 		}
-		signal := condition{Host: host.ID, Name: hostName(host), Kind: kind, State: state, Detail: detail, Key: key}
-		row.Signals = append(row.Signals, signal)
-		if state != "healthy" {
-			row.Conditions = append(row.Conditions, signal)
-		}
-		if state != "unavailable" && severity(state) > severity(row.Health) {
-			row.Health = state
-		}
+		row.Signals = append(row.Signals, condition{Host: host.ID, Name: hostName(host), Kind: kind, State: state, Detail: detail, Key: key})
 	}
 	if !row.Fresh {
 		add("contact", "Contact / measurements", "unavailable", row.Status+"; latest readings may be old")
@@ -300,29 +304,66 @@ func (h *Hub) fleetRow(host store.Host) fleetHost {
 		}
 		add("container/"+key, "Container", h.containerState(host.ID, c), containerDetail(c))
 	}
+	h.restartSignals(host, add)
+	if row.Fresh {
+		for _, signal := range h.forecastSignals(host) {
+			add(signal.Key, signal.Kind, signal.State, signal.Detail)
+		}
+	}
+	// Only a fresh snapshot can prove a container is absent.
+	if h.stateFresh(host.Sample) {
+		for _, e := range h.config.ExpectedContainers {
+			if e.Host != host.ID || slices.ContainsFunc(host.Sample.Containers, func(c protocol.Container) bool { return c.Name == e.Name }) {
+				continue
+			}
+			add("container/"+e.Name, "Container", e.Severity, e.Name+": missing")
+		}
+	}
 	for _, err := range host.Sample.Errors {
 		add("collection/"+err, "Collection", "warning", err)
 	}
 	for _, signal := range h.backupSignals(host) {
 		add(signal.Key, signal.Kind, signal.State, signal.Detail)
 	}
-	if !row.Fresh || (missing && row.Health == "healthy") {
+	row.missing = missing
+	row.CPUView, row.MemoryView, row.DiskView = h.metricReading("cpu", row.CPU), h.metricReading("memory", row.Memory), h.metricReading("disk", row.Disk)
+	row.settle()
+	return row
+}
+
+// settle derives conditions, health, reason and meter states from the signals.
+// Pending conditions are listed but never raise host health.
+func (row *fleetHost) settle() {
+	row.Health, row.Conditions = "healthy", nil
+	for _, signal := range row.Signals {
+		if signal.State != "healthy" {
+			row.Conditions = append(row.Conditions, signal)
+		}
+		if signal.State != "unavailable" && signal.State != "pending" && severity(signal.State) > severity(row.Health) {
+			row.Health = signal.State
+		}
+	}
+	if !row.Fresh || (row.missing && row.Health == "healthy") {
 		row.Health = "unavailable"
 	}
 	row.Reason = row.primaryReason()
-	row.CPUView, row.MemoryView, row.DiskView = h.metricReading("cpu", row.CPU), h.metricReading("memory", row.Memory), h.metricReading("disk", row.Disk)
+	views := map[string]*metricView{"cpu": &row.CPUView, "memory": &row.MemoryView, "disk": &row.DiskView}
+	for _, signal := range row.Signals {
+		if v, ok := views[signal.Key]; ok && v.Value != nil {
+			v.State = signal.State
+		}
+	}
 	if !row.Fresh {
-		for _, v := range []*metricView{&row.CPUView, &row.MemoryView, &row.DiskView} {
+		for _, v := range views {
 			v.State = "unavailable"
 		}
 	}
-	return row
 }
 
 // threshold returns the configured limit for a warning/critical resource state.
 func (h *Hub) threshold(resource, state string) (float64, bool) {
 	p := h.config.AlertPolicy.Resources
-	t := map[string]config.Thresholds{"cpu": p.CPU, "memory": p.Memory, "disk": p.Disk}[resource]
+	t := map[string]config.Thresholds{"cpu": p.CPU, "memory": p.Memory, "disk": p.Disk.Thresholds}[resource]
 	switch state {
 	case "warning":
 		return t.Warning, true
@@ -423,7 +464,7 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 	// Triage (cards, counts, attention) covers every host on the page; the filter never hides a problem.
 	cards := []fleetHost{}
 	for _, host := range hosts {
-		row := h.fleetRow(host)
+		row := h.displayRow(r.Context(), host, now)
 		cards = append(cards, row)
 		counts[row.Health]++
 		conditions = append(conditions, row.Conditions...)
@@ -461,6 +502,16 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return severity(rows[i].Health) > severity(rows[j].Health) })
 	sort.SliceStable(cards, func(i, j int) bool { return severity(cards[i].Health) > severity(cards[j].Health) })
+	checks := h.displayChecks(r.Context(), now)
+	failingChecks := map[string]bool{}
+	for _, c := range checks {
+		if c.State != "healthy" {
+			conditions = append(conditions, c)
+		}
+		if c.State == "warning" || c.State == "critical" {
+			failingChecks[c.Name] = true
+		}
+	}
 	sort.SliceStable(conditions, func(i, j int) bool { return severity(conditions[i].State) > severity(conditions[j].State) })
 	sort.SliceStable(storage, func(i, j int) bool { return storage[i].Percent > storage[j].Percent })
 	ranks := map[string][]fleetHost{}
@@ -484,11 +535,6 @@ func (h *Hub) fleet(w http.ResponseWriter, r *http.Request) {
 		sort.SliceStable(list, func(i, j int) bool { return *value(list[i]) > *value(list[j]) })
 		ranks[key] = list[:min(5, len(list))]
 	}
-	h.mu.Lock()
-	degraded := h.degraded
-	if degraded == "" {
-		degraded = h.maintenance
-	}
-	h.mu.Unlock()
-	h.render(w, "fleet", map[string]any{"View": view, "Title": title, "Views": views, "Hosts": rows, "Summary": fleetSummary(counts, len(cards), len(hosts) == 100, degraded), "Cards": cards, "Total": len(cards), "Counts": counts, "Conditions": conditions, "Attention": conditions, "Volumes": storage, "Ranks": ranks, "Charts": charts, "Sparks": sparks, "Start": start.UnixMilli(), "End": now.UnixMilli(), "Gap": step * 1500, "Step": step * 1000, "Range": window, "Query": query, "Offset": offset, "Previous": max(offset-100, 0), "Next": offset + 100, "More": len(hosts) == 100, "Degraded": degraded, "CSRF": h.csrf(r), "Local": h.config.AuthMode == "local"})
+	degraded := h.banner()
+	h.render(w, "fleet", map[string]any{"View": view, "Title": title, "Views": views, "Hosts": rows, "Summary": fleetSummary(counts, len(cards), len(hosts) == 100, degraded, len(failingChecks)), "Checks": h.checkViews(checks), "Cards": cards, "Total": len(cards), "Counts": counts, "Conditions": conditions, "Attention": conditions, "Volumes": storage, "Ranks": ranks, "Charts": charts, "Sparks": sparks, "Start": start.UnixMilli(), "End": now.UnixMilli(), "Gap": step * 1500, "Step": step * 1000, "Range": window, "Query": query, "Offset": offset, "Previous": max(offset-100, 0), "Next": offset + 100, "More": len(hosts) == 100, "Degraded": degraded, "CSRF": h.csrf(r), "Local": h.config.AuthMode == "local"})
 }

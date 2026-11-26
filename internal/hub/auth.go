@@ -135,17 +135,7 @@ func (h *Hub) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid CSRF token", 403)
 		return
 	}
-	h.mu.Lock()
-	if time.Since(h.loginWindow) > time.Minute {
-		h.loginWindow = time.Now()
-		h.loginAttempts = 0
-	}
-	h.loginAttempts++
-	limited := h.loginAttempts > 10
-	h.mu.Unlock()
-	if limited {
-		w.Header().Set("Retry-After", "60")
-		http.Error(w, "too many login attempts", 429)
+	if h.passwordAttemptLimited(w) {
 		return
 	}
 	hash, err := h.store.Setting(r.Context(), "password")
@@ -177,11 +167,64 @@ func (h *Hub) login(w http.ResponseWriter, r *http.Request) {
 	h.cookie(w, "login_csrf", "", -1)
 	http.Redirect(w, r, "/", 303)
 }
+
+// passwordAttemptLimited bounds password guesses through login and password change.
+func (h *Hub) passwordAttemptLimited(w http.ResponseWriter) bool {
+	h.mu.Lock()
+	if time.Since(h.loginWindow) > time.Minute {
+		h.loginWindow = time.Now()
+		h.loginAttempts = 0
+	}
+	h.loginAttempts++
+	limited := h.loginAttempts > 10
+	h.mu.Unlock()
+	if limited {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "too many login attempts", 429)
+	}
+	return limited
+}
+
+// bootstrapped reports whether the default admin/admin password has been replaced.
+func (h *Hub) bootstrapped(ctx context.Context) (bool, error) {
+	initialized, err := h.store.Setting(ctx, "initialized")
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	return initialized == "yes", nil
+}
+
 func (h *Hub) passwordPage(w http.ResponseWriter, r *http.Request) {
 	session, _ := r.Context().Value(authKey{}).(browserSession)
-	h.render(w, "password", map[string]any{"CSRF": session.CSRF})
+	initialized, err := h.bootstrapped(r.Context())
+	if err != nil {
+		http.Error(w, "storage unavailable", 503)
+		return
+	}
+	h.render(w, "password", map[string]any{"CSRF": session.CSRF, "Current": initialized})
 }
 func (h *Hub) password(w http.ResponseWriter, r *http.Request) {
+	initialized, err := h.bootstrapped(r.Context())
+	if err != nil {
+		http.Error(w, "storage unavailable", 503)
+		return
+	}
+	// After bootstrap a session alone must not be enough to take over the account.
+	// During bootstrap the admin/admin login has just proved the default password.
+	if initialized {
+		if h.passwordAttemptLimited(w) {
+			return
+		}
+		hash, err := h.store.Setting(r.Context(), "password")
+		if err != nil {
+			http.Error(w, "storage unavailable", 503)
+			return
+		}
+		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(r.Form.Get("current"))) != nil {
+			http.Error(w, "current password is incorrect", 403)
+			return
+		}
+	}
 	password := r.Form.Get("password")
 	if len(password) < 6 || len(password) > 72 || !strings.ContainsFunc(password, func(r rune) bool { return unicode.IsPunct(r) || unicode.IsSymbol(r) }) {
 		http.Error(w, "password must contain 6–72 bytes and at least one special character (punctuation or symbol)", 400)

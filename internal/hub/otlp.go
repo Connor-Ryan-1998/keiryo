@@ -81,6 +81,7 @@ func (h *Hub) ingestOTLP(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := otlp.Decode(body, content)
 	if err != nil {
+		h.countIngest("otlp", "invalid")
 		writeOTLPError(w, r, 400, "invalid OTLP metrics")
 		return
 	}
@@ -91,6 +92,7 @@ func (h *Hub) ingestOTLP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, otlp.ErrHostIdentity) {
 			status = 403
 		}
+		h.countIngest("otlp", "invalid")
 		writeOTLPError(w, r, status, err.Error())
 		return
 	}
@@ -98,12 +100,16 @@ func (h *Hub) ingestOTLP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := h.store.IngestOTLP(ctx, r.Header.Get("X-Host-ID"), points, now, h.config.BucketSeconds)
 	if err != nil {
-		h.setError("OTLP metrics could not be committed; check database and disk capacity.")
+		h.countIngest("otlp", "error")
+		h.setStatus(statusOTLP, "OTLP metrics could not be committed; check database and disk capacity.")
 		writeOTLPError(w, r, 503, "storage unavailable")
 		return
 	}
+	h.setStatus(statusOTLP, "")
+	h.countIngest("otlp", "accepted")
 	out := new(collectorpb.ExportMetricsServiceResponse)
 	rejected += result.Rejected
+	h.counters.add("keiryo_otlp_points_rejected_total", uint64(rejected))
 	if rejected > 0 {
 		out.PartialSuccess = &collectorpb.ExportMetricsPartialSuccess{RejectedDataPoints: rejected, ErrorMessage: "Unsupported, invalid or conflicting metric points rejected; see the supported metric mapping."}
 	}

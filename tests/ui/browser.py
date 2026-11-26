@@ -89,7 +89,7 @@ def main():
                 assert brand.inner_text() == "keiryō"
                 page.wait_for_function("() => document.querySelector('header img').naturalWidth > 0")
                 icon = page.locator('link[rel="icon"][type="image/svg+xml"]')
-                assert icon.get_attribute("href") == "/static/keiryo.svg"
+                assert icon.get_attribute("href").startswith("/static/keiryo.svg?v=")
                 page.get_by_label("Username").fill("admin")
                 page.get_by_label("Password", exact=True).fill("admin")
                 page.get_by_role("button", name="Sign in", exact=True).click()

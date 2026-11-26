@@ -10,9 +10,10 @@ import (
 
 // Notification tracks the latest desired state and the last acknowledged delivery.
 type Notification struct {
-	State, Delivered, Kind, Detail string
-	Since, Next                    int64
-	Attempts                       int
+	// Confirmed is the latest state that lasted the pending period.
+	State, Delivered, Confirmed, Kind, Detail string
+	Since, Next                               int64
+	Attempts                                  int
 }
 
 func (s *Store) Notifications(ctx context.Context, host string) (map[string]Notification, error) {

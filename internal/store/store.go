@@ -111,13 +111,15 @@ func Open(path string) (*Store, error) {
 			return nil, migrateErr
 		}
 	}
-	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS sample_state_history ON samples(host,at) WHERE data!='{}'`); err != nil {
+	// point_series serves the per-measurement summary extrema refresh during OTLP ingest.
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS sample_state_history ON samples(host,at) WHERE data!='{}'; CREATE INDEX IF NOT EXISTS point_series ON points(host,name,entity,at)`); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
 }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error                   { return s.db.Close() }
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 // Configure prevents incompatible bucket grids being combined after a config edit.
 func (s *Store) Configure(ctx context.Context, bucket int) error {
@@ -317,13 +319,28 @@ func (s *Store) Maintain(ctx context.Context, now time.Time, raw, summary time.D
 	if err := s.pruneLatest(ctx, now.Add(-raw)); err != nil {
 		return err
 	}
-	// Work in bounded chunks. Repeated maintenance catches up without one giant deletion.
+	// Work in bounded chunks so each statement stays short, and repeat a chunk
+	// until the backlog is drained: OTLP writes one samples row per measurement,
+	// so a busy fleet produces more than one chunk per minute. The time budget
+	// leaves any remainder for the next pass instead of starving ingest.
+	budget := time.Now().Add(10 * time.Second)
 	for _, q := range []struct {
-		sql string
-		cut int64
-	}{{`DELETE FROM samples WHERE rowid IN(SELECT rowid FROM samples WHERE at<? ORDER BY at LIMIT 1000)`, now.Add(-raw).Unix()}, {`DELETE FROM summaries WHERE rowid IN(SELECT rowid FROM summaries WHERE at<? ORDER BY at LIMIT 10000)`, now.Add(-summary).Unix()}, {`DELETE FROM state_summaries WHERE rowid IN(SELECT rowid FROM state_summaries WHERE at<? ORDER BY at LIMIT 1000)`, now.Add(-summary).Unix()}, {`DELETE FROM sessions WHERE expires<?`, now.Unix()}, {`DELETE FROM otlp_observations WHERE rowid IN(SELECT rowid FROM otlp_observations WHERE at<? ORDER BY at LIMIT 10000)`, now.Add(-raw).UnixNano()}, {`DELETE FROM otlp_owners WHERE at<?`, now.Add(-raw).UnixNano()}, {`DELETE FROM otlp_series WHERE at<?`, now.Add(-raw).UnixNano()}} {
-		if _, err := s.db.ExecContext(ctx, q.sql, q.cut); err != nil {
-			return err
+		sql   string
+		cut   int64
+		chunk int64
+	}{{`DELETE FROM samples WHERE rowid IN(SELECT rowid FROM samples WHERE at<? ORDER BY at LIMIT 1000)`, now.Add(-raw).Unix(), 1000}, {`DELETE FROM summaries WHERE rowid IN(SELECT rowid FROM summaries WHERE at<? ORDER BY at LIMIT 10000)`, now.Add(-summary).Unix(), 10000}, {`DELETE FROM state_summaries WHERE rowid IN(SELECT rowid FROM state_summaries WHERE at<? ORDER BY at LIMIT 1000)`, now.Add(-summary).Unix(), 1000}, {`DELETE FROM sessions WHERE expires<?`, now.Unix(), 0}, {`DELETE FROM otlp_observations WHERE rowid IN(SELECT rowid FROM otlp_observations WHERE at<? ORDER BY at LIMIT 10000)`, now.Add(-raw).UnixNano(), 10000}, {`DELETE FROM otlp_owners WHERE at<?`, now.Add(-raw).UnixNano(), 0}, {`DELETE FROM otlp_series WHERE at<?`, now.Add(-raw).UnixNano(), 0}} {
+		for {
+			res, err := s.db.ExecContext(ctx, q.sql, q.cut)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if q.chunk == 0 || n < q.chunk || time.Now().After(budget) {
+				break
+			}
 		}
 	}
 	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`)
@@ -377,4 +394,65 @@ func (s *Store) ChangePassword(ctx context.Context, hash string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// RetentionBacklog is the age beyond raw retention of the oldest raw row still
+// stored. Zero means cleanup is keeping up.
+func (s *Store) RetentionBacklog(ctx context.Context, now time.Time, raw time.Duration) (time.Duration, error) {
+	var sample, observation sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT MIN(at) FROM samples),(SELECT MIN(at) FROM otlp_observations)`).Scan(&sample, &observation); err != nil {
+		return 0, err
+	}
+	cutoff := now.Add(-raw)
+	backlog := time.Duration(0)
+	if sample.Valid {
+		backlog = max(backlog, cutoff.Sub(time.Unix(sample.Int64, 0)))
+	}
+	if observation.Valid {
+		backlog = max(backlog, cutoff.Sub(time.Unix(0, observation.Int64)))
+	}
+	return backlog, nil
+}
+
+// RestartBaseline returns container restart counts (by container ID) from the
+// earliest container snapshot at or after since. ok is false without one.
+func (s *Store) RestartBaseline(ctx context.Context, host string, since time.Time) (map[string]int, bool, error) {
+	var b []byte
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM samples WHERE host=? AND at>=? AND data!='{}' ORDER BY at LIMIT 1`, host, since.Unix()).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var snapshot Snapshot
+	if err = json.Unmarshal(b, &snapshot); err != nil {
+		return nil, false, err
+	}
+	out := make(map[string]int, len(snapshot.Containers))
+	for _, c := range snapshot.Containers {
+		out[c.ID] = c.Restarts
+	}
+	return out, true, nil
+}
+
+// FilesystemSummaries returns bucket averages of filesystem total/free bytes
+// since start, oldest first, for usage forecasting.
+func (s *Store) FilesystemSummaries(ctx context.Context, host string, start time.Time) ([]Point, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT at,name,entity,total/weight FROM summaries WHERE host=? AND at>=? AND name IN('filesystem_total_bytes','filesystem_free_bytes') AND weight>0 ORDER BY at LIMIT 100000`, host, start.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Point
+	for rows.Next() {
+		var p Point
+		var at int64
+		if err = rows.Scan(&at, &p.Name, &p.Entity, &p.Average); err != nil {
+			return nil, err
+		}
+		p.At = time.Unix(at, 0).UTC()
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
