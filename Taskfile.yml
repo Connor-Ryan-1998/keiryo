@@ -151,6 +151,12 @@ tasks:
     cmds:
       - python tools/preview.py
 
+  screenshots:
+    desc: Regenerate README screenshots in docs/images from a synthetic fleet
+    deps: [build:native]
+    cmds:
+      - uv run --locked --with playwright==1.57.0 python tools/screenshots.py
+
   test:preview:
     internal: true
     deps: [build:native]

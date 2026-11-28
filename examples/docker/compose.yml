@@ -1,0 +1,46 @@
+# Single-host keiryō: hub + agent on the same Linux machine.
+# Run ./init.sh once first, then `docker compose up -d` and open http://127.0.0.1:9080.
+#
+# Both services use host networking so the hub's first-run bootstrap stays on
+# loopback, as keiryō requires. Put a TLS reverse proxy in front before exposing
+# the UI, and see docs/reference.md for adding agents on other hosts.
+services:
+  hub:
+    image: ghcr.io/connor-ryan-1998/keiryo:latest
+    command: ["hub", "-config", "/config/hub.json"]
+    restart: unless-stopped
+    network_mode: host
+    user: "65532:65532"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    environment:
+      GOMEMLIMIT: 192MiB
+    volumes:
+      - ./hub:/config:ro
+      - ./data/hub:/data
+
+  agent:
+    image: ghcr.io/connor-ryan-1998/keiryo:latest
+    command: ["agent", "-config", "/config/agent.json"]
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    # Root is needed to read host metrics; the Docker socket is host-root equivalent.
+    user: "0:0"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    environment:
+      HOST_PROC: /host/proc
+      HOST_SYS: /host/sys
+      HOST_ETC: /host/etc
+      HOST_ROOT: /host
+    volumes:
+      - ./agent:/config:ro
+      - ./data/agent:/data
+      - /:/host:ro,rslave
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [hub]

@@ -64,6 +64,14 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/Connor-Ryan-1998/keiryo
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=keiryō
+            org.opencontainers.image.description=Lightweight self-hosted server and Docker monitoring: Go hub, Rust agents, OTLP, SQLite.
+            org.opencontainers.image.licenses=Apache-2.0
+          # GHCR reads multi-arch package metadata from index annotations.
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/Connor-Ryan-1998/keiryo
+            index:org.opencontainers.image.description=Lightweight self-hosted server and Docker monitoring: Go hub, Rust agents, OTLP, SQLite.
+            index:org.opencontainers.image.licenses=Apache-2.0
           cache-from: type=gha
           cache-to: type=gha,mode=max
   release:

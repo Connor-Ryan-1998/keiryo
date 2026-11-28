@@ -1,3 +1,6 @@
+from pathlib import Path
+import tarfile
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -59,7 +62,14 @@ class PublicationTests(unittest.TestCase):
                     raise RuntimeError("registry unavailable")
             return ""
 
-        with patch.object(release, "run", side_effect=run):
+        self.packaged = []
+
+        def package(image, version, out):
+            self.packaged.append((image, version))
+            return [out / "keiryo.tar.gz", out / "SHA256SUMS"]
+
+        with patch.object(release, "run", side_effect=run), \
+                patch.object(release, "package_binaries", side_effect=package):
             release.publish("owner/repo", "commit", "0.0.0")
 
     def test_stale_commit_does_not_publish(self):
@@ -89,9 +99,20 @@ class PublicationTests(unittest.TestCase):
         )
         self.assertLess(reserve_index, promotion_index)
         self.assertLess(promotion_index, release_index)
+        self.assertEqual(self.packaged, [("ghcr.io/owner/repo:sha-commit", "0.0.1")])
+        uploaded = [Path(arg).name for arg in self.commands[release_index]]
+        self.assertIn("keiryo.tar.gz", uploaded)
+        self.assertIn("SHA256SUMS", uploaded)
+
+    def test_failed_packaging_reserves_nothing(self):
+        with patch.object(release, "package_binaries", side_effect=RuntimeError("pull failed")), \
+                patch.object(release, "run", side_effect=lambda *a: "commit" if a[2].endswith("main") else ""), \
+                self.assertRaisesRegex(RuntimeError, "pull failed"):
+            release.publish("owner/repo", "commit", "0.0.0")
 
     def test_completed_release_rerun_does_not_mutate_images(self):
         self.publish(tags={"v0.0.1": "commit"}, released=True)
+        self.assertEqual(self.packaged, [])
         self.assertFalse(any(c[0] == "docker" for c in self.commands))
         self.assertFalse(any(c[:3] == ("gh", "release", "create") for c in self.commands))
 
@@ -106,6 +127,41 @@ class PublicationTests(unittest.TestCase):
         self.assertFalse(
             any(any(arg.endswith("/git/refs") for arg in c) for c in self.commands)
         )
+
+
+class PackagingTests(unittest.TestCase):
+    def test_archives_contain_both_executables_and_notices(self):
+        commands = []
+
+        def run(*args):
+            commands.append(args)
+            if args[:2] == ("docker", "create"):
+                return "cid"
+            if args[:2] == ("docker", "cp"):
+                source, destination = args[2].split(":", 1)[1], Path(args[3])
+                target = destination / Path(source).name
+                if source == "/licenses":
+                    target.mkdir()
+                    (target / "GO-LICENSE").write_text("go")
+                else:
+                    target.write_text("binary")
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(release, "run", side_effect=run):
+            assets = release.package_binaries("img:sha-x", "1.2.3", Path(directory))
+            names = [asset.name for asset in assets]
+            self.assertEqual(names, [
+                "keiryo_1.2.3_linux_amd64.tar.gz", "keiryo_1.2.3_linux_arm64.tar.gz", "SHA256SUMS",
+            ])
+            with tarfile.open(assets[0]) as tar:
+                members = set(tar.getnames())
+            for member in ["monitoring", "monitoring-agent", "licenses/GO-LICENSE", "LICENSE", "NOTICE"]:
+                self.assertIn(f"keiryo_1.2.3_linux_amd64/{member}", members)
+            sums = assets[2].read_text().splitlines()
+            self.assertEqual([line.split("  ")[1] for line in sums], names[:2])
+        self.assertIn(("docker", "create", "--platform", "linux/arm64", "img:sha-x"), commands)
+        self.assertEqual(sum(c[:2] == ("docker", "rm") for c in commands), 2)
 
 
 if __name__ == "__main__":

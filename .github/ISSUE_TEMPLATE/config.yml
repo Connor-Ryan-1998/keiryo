@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/Connor-Ryan-1998/keiryo/discussions
+    about: Ask setup questions or share how you use keiryō.
+  - name: Security vulnerability
+    url: https://github.com/Connor-Ryan-1998/keiryo/security/advisories/new
+    about: Report security issues privately.

@@ -1,0 +1,8 @@
+{
+  "ui_listen": "127.0.0.1:9080",
+  "agent_listen": "127.0.0.1:9081",
+  "public_url": "http://127.0.0.1:9080",
+  "database": "/data/monitoring.db",
+  "auth_mode": "local",
+  "agents": {"local": "local.token"}
+}

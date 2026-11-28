@@ -9,7 +9,7 @@ Go dependencies and checksums are pinned in `go.mod` / `go.sum`. Direct dependen
 - `google.golang.org/protobuf`: protobuf binary/JSON encoding (BSD-3-Clause).
 - `google.golang.org/genproto/googleapis/rpc`: OTLP error status messages (Apache-2.0).
 
-Rust dependencies and transitive versions/checksums are locked in `agent-rust/Cargo.lock`. The agent uses redb (MIT/Apache-2.0), official `opentelemetry-proto` definitions (Apache-2.0), prost (Apache-2.0), reqwest/Rustls for HTTP/TLS, serde/serde_json, chrono, uuid, signal-hook, libc and sysinfo for native macOS collection. Dependency notices are copied under `/licenses/rust/` in the release image. The old Go collector remains a compatibility-test oracle, not a production fallback. `tempfile` is test-only. These dependency licences do not license this project's own source.
+Rust dependencies and transitive versions/checksums are locked in `agent-rust/Cargo.lock`. The agent uses redb (MIT/Apache-2.0), official `opentelemetry-proto` definitions (Apache-2.0), prost (Apache-2.0), reqwest/Rustls for HTTP/TLS, serde/serde_json, chrono, uuid, signal-hook, libc and sysinfo for native macOS collection. Dependency notices are copied under `/licenses/rust/` in the release image. The old Go collector remains a compatibility-test oracle, not a production fallback. `tempfile` is test-only. keiryō itself is licensed under the Apache License 2.0 (see `LICENSE` and `NOTICE`); these dependency licences apply only to their respective components.
 
 `internal/hub/static/htmx.min.js` is vendored from `https://unpkg.com/htmx.org@2.0.8/dist/htmx.min.js`, distributed under the Zero-Clause BSD license. No CDN is used at runtime.
 

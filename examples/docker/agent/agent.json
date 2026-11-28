@@ -1,0 +1,9 @@
+{
+  "host_id": "local",
+  "display_name": "This host",
+  "hub_url": "http://127.0.0.1:9081",
+  "credential_file": "local.token",
+  "queue_database": "/data/agent.redb",
+  "docker_socket": "/var/run/docker.sock",
+  "exclude_interfaces": ["lo"]
+}

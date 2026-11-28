@@ -55,5 +55,6 @@ COPY --from=agent-build /agent/target/release/monitoring-agent /monitoring-agent
 COPY --from=agent-build /licenses /licenses/rust/
 COPY --from=build /licenses /licenses
 COPY --from=build /src/internal/hub/static/echarts.*.txt /licenses/echarts/
+COPY --from=build /src/LICENSE /src/NOTICE /licenses/keiryo/
 USER 65532:65532
 ENTRYPOINT ["/monitoring"]

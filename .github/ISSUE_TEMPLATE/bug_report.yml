@@ -1,0 +1,50 @@
+name: Bug report
+description: Something in keiryō is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! For security issues, use [private vulnerability reporting](https://github.com/Connor-Ryan-1998/keiryo/security/advisories/new) instead.
+        Never paste tokens, webhook URLs or database contents.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or image tag (e.g. v0.0.4, sha-…)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run it?
+      options: [Docker Compose example, Container image (other), Release binaries, From source / preview]
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      multiple: true
+      options: [Hub / dashboard, Agent, Alerts / Discord, OTLP / Collector ingest, Docs]
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: Debian 13, arm64
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Include relevant config with secrets removed.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: text
